@@ -10,20 +10,22 @@ from gait_generator import (
     generate_trot_trajectories,
     generate_walk_trajectories,
     generate_bound_trajectories,
-    generate_pronk_trajectories
+    generate_pronk_trajectories,
+    generate_crawl_trajectories
 )
 
 
 # Gait parameters dictionary
 # Format: 'NAME': [STACKTYPE, x0, y0, xrange, yrange, yrange2, s1_count, s2_count]
 GAITS = {
+    'CRAWL':     ['crawl', 9.75, 40, 10, 20, 0, 50, 25],
     'TROT':      ['trot', 9.75, 43.36, 40, 20, 0, 15, 30],
     'TROT_HIGH': ['trot', 9.75, 60, 20, 10, 0, 15, 30],
     'TROT_LOW':  ['trot', 9.75, 25, 20, 10, 0, 15, 30],
     'TROT_FAST': ['trot', 9.75, 43.36, 50, 20, 0, 12, 24],
-    'WALK':      ['walk',  9.75, 43.36, 30, 20, 0, 20, 140],
+    'WALK':      ['walk', 9.75, 43.36, 30, 20, 0, 20, 140],
     'BOUND':     ['bound', 9.75, 33.36, 40, 0, 20, 50, 10],
-    'PRONK':     ['pronk', 9.75, 33.36, 40, 0, 20, 60, 10]
+    'PRONK':     ['pronk', 9.75, 33.36, 40, 0, 20, 60, 10],
 }
 
 
@@ -96,6 +98,8 @@ class GaitManager:
             trajectories = generate_bound_trajectories(self.leg, gait_params)
         elif stacktype == 'pronk':
             trajectories = generate_pronk_trajectories(self.leg, gait_params)
+        elif stacktype == 'crawl':
+            trajectories = generate_crawl_trajectories(self.leg, gait_params)
         else:
             return False
 
