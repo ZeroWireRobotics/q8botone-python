@@ -110,8 +110,9 @@ gait_names = list(GAITS.keys())
 gait_manager = GaitManager(leg, GAITS)
 
 # Starting location of leg end effector in x and y
-pos_x = leg.d/2
-pos_y = round((leg.l1 + leg.l2) * 0.667, 2)
+first_gait_params = GAITS[gait_names[0]]
+pos_x = first_gait_params[1]
+pos_y = first_gait_params[2]
 move_xy(pos_x, pos_y, 1000)
 
 # Pre-calculate trajectories for default gait
