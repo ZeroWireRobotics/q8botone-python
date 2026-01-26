@@ -1,5 +1,7 @@
 # Custom files to be ignored
 /DynamixelSDK/
+docs/*.SLDPRT
+docs/*.SLDASM
 experiments/
 tests/
 archived/
