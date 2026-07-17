@@ -26,7 +26,13 @@ from espnow import q8_espnow
 from helpers import XiaoPortFinder, Q8Logger
 from gait_manager import GaitManager, GAITS
 from routine_generator import show_range, greet
-from input_handler import InputHandler, detect_and_init_joystick
+from input_handler import (
+    InputHandler,
+    list_available_joysticks,
+    prompt_controller_selection,
+    prompt_bot_selection,
+    init_selected_joystick,
+)
 
 # Q8bot leg configuration
 CENTER_DIST = 19.5  # Distance between two actuators
@@ -59,20 +65,6 @@ exit = False
 record = False
 request = "none"
 
-# Find a serial port and connect
-if args.com_port:
-    # User provided a COM port
-    com_port = args.com_port
-    if not XiaoPortFinder.validate(com_port):
-        log.error(f"{com_port} is not an ESP32C3 or does not exist.")
-        sys.exit(1)
-else:
-    # Auto-detect COM port
-    com_port = XiaoPortFinder.find()
-    if com_port is None:
-        log.error("No ESP32C3 controller device found.")
-        sys.exit(1)
-
 # Start pygame instance
 pygame.init()
 window = pygame.display.set_mode((1280, 720), pygame.RESIZABLE)
@@ -81,8 +73,25 @@ clock = pygame.time.Clock()
 # Set up pygame surface for logger
 Q8Logger.set_pygame_surface(window)
 
-# Detect and initialize input device (joystick or keyboard)
-use_joystick, joystick, joystick_mapping = detect_and_init_joystick()
+# Resolve COM port and input device
+available_joysticks = list_available_joysticks()
+
+if args.com_port:
+    # User provided a COM port on the command line - only prompt for input device
+    com_port = args.com_port
+    if not XiaoPortFinder.validate(com_port):
+        log.error(f"{com_port} is not an ESP32C3 or does not exist.")
+        sys.exit(1)
+    selected_joystick_index = prompt_controller_selection(available_joysticks)
+else:
+    # No COM port given - let the user pick both port and input device together
+    available_ports = XiaoPortFinder.list_all()
+    if not available_ports:
+        log.error("No ESP32C3 controller device found.")
+        sys.exit(1)
+    com_port, selected_joystick_index = prompt_bot_selection(available_joysticks, available_ports)
+
+use_joystick, joystick, joystick_mapping = init_selected_joystick(selected_joystick_index)
 input_handler = InputHandler(use_joystick, joystick, joystick_mapping)
 
 # Load appropriate instruction image based on input device

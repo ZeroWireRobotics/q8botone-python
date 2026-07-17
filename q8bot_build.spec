@@ -6,7 +6,7 @@ Usage:
     pyinstaller q8bot_build.spec
 
 Output:
-    dist/q8bot.exe - Single file executable
+    dist/Q8botOne.exe - Single file executable
 """
 
 block_cipher = None
@@ -27,6 +27,8 @@ a = Analysis(
         'serial',
         'serial.tools',
         'serial.tools.list_ports',
+        'tkinter',
+        'tkinter.ttk',
     ],
     hookspath=[],
     hooksconfig={},
@@ -52,7 +54,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='q8bot',
+    name='Q8botOne',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

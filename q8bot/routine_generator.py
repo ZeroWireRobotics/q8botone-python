@@ -32,6 +32,10 @@ G4 = [45, 90, -45, 45, 50, 75, 50, 75]
 G5 = [-45, 45, 45, 90, 50, 75, 50, 75]
 G6 = [-90, 45, -90, 45, -90, 45, -90, 45]
 
+# Q8bot shoot motion via points
+S1 = [-45, 90, -45, 90, -45, 90, -45, 90]
+S2 = [90, 225, 90, 225, 90, 225, 90, 225]
+
 
 def show_range(q8):
     for pos in R:
@@ -55,3 +59,9 @@ def greet(q8):
     time.sleep(0.75)
     q8.move_all(G6, 500, False)
     time.sleep(0.7)
+
+def shoot(q8):
+    q8.move_all(S1, 500, False)
+    time.sleep(0.5)
+    q8.move_all(S2, 200, False)
+    time.sleep(0.5)

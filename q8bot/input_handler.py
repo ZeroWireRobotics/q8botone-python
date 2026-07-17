@@ -188,6 +188,70 @@ def prompt_controller_selection(devices):
     return None
 
 
+def prompt_bot_selection(devices, com_ports):
+    """
+    Show a single dialog with two dropdowns: COM port and input device.
+
+    Args:
+        devices: list of dicts from list_available_joysticks()
+        com_ports: list of str, available COM port device names (non-empty)
+
+    Returns:
+        tuple: (com_port, joystick_index)
+            - com_port: str, the selected COM port
+            - joystick_index: int or None (None = keyboard)
+    """
+    import tkinter as tk
+    from tkinter import ttk
+
+    compatible_devices = [d for d in devices if d['compatible']]
+    controller_labels = [KEYBOARD_LABEL] + [f"{d['name']} (Joystick {d['index']})" for d in compatible_devices]
+
+    root = tk.Tk()
+    root.title("Q8bot - Select Port and Input Device")
+    root.resizable(False, False)
+
+    window_width, window_height = 360, 200
+    x = (root.winfo_screenwidth() - window_width) // 2
+    y = (root.winfo_screenheight() - window_height) // 2
+    root.geometry(f"{window_width}x{window_height}+{x}+{y}")
+    root.attributes("-topmost", True)
+
+    tk.Label(root, text="Select COM port:").pack(pady=(15, 5))
+    port_var = tk.StringVar(value=com_ports[0])
+    port_combo = ttk.Combobox(root, textvariable=port_var, values=com_ports, state="readonly", width=35)
+    port_combo.current(0)
+    port_combo.pack(pady=5)
+
+    tk.Label(root, text="Select control input:").pack(pady=(15, 5))
+    controller_var = tk.StringVar(value=controller_labels[0])
+    controller_combo = ttk.Combobox(root, textvariable=controller_var, values=controller_labels,
+                                     state="readonly", width=35)
+    controller_combo.current(0)
+    controller_combo.pack(pady=5)
+
+    result = {'port': port_var.get(), 'choice': controller_labels[0]}
+
+    def on_ok():
+        result['port'] = port_var.get()
+        result['choice'] = controller_var.get()
+        root.destroy()
+
+    tk.Button(root, text="OK", command=on_ok, width=10).pack(pady=(15, 5))
+    root.protocol("WM_DELETE_WINDOW", on_ok)  # closing window keeps current selections
+    root.mainloop()
+
+    chosen_port = result['port']
+    chosen_label = result['choice']
+    joystick_index = None
+    for d in compatible_devices:
+        if chosen_label == f"{d['name']} (Joystick {d['index']})":
+            joystick_index = d['index']
+            break
+
+    return chosen_port, joystick_index
+
+
 def init_selected_joystick(index):
     """
     Initialize the joystick chosen by the user and build its control mapping.
