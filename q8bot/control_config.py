@@ -39,23 +39,29 @@ KEYBOARD_MAPPING = {
 
 # Joystick configuration embedded as Python dictionary
 # This configuration defines controller mappings and action bindings
+
+# Shared by both Joy-Con pairing modes: SDL reports "(R)" for a lone right
+# Joy-Con, but "(L/R)" when both halves are paired together over Bluetooth.
+_JOYCON_MAPPING = {
+    "axes": {
+        "horizontal": 0,
+        "vertical": 1,
+        "deadzone": 0.2
+    },
+    "buttons": {
+        "top": 2,
+        "bottom": 1,
+        "left": 3,
+        "right": 0,
+        "side1": [9, 10],  # L/R (either Joy-Con) -> reset
+        "side2": 5         # Home -> exit
+    }
+}
+
 JOYSTICK_CONFIG = {
     "controllers": {
-        "Nintendo Switch Joy-Con (R)": {
-            "axes": {
-                "horizontal": 0,
-                "vertical": 1,
-                "deadzone": 0.2
-            },
-            "buttons": {
-                "top": 2,
-                "bottom": 1,
-                "left": 3,
-                "right": 0,
-                "side1": 16,
-                "side2": 18
-            }
-        },
+        "Nintendo Switch Joy-Con (R)": _JOYCON_MAPPING,
+        "Nintendo Switch Joy-Con (L/R)": _JOYCON_MAPPING,
         "Controller for PC": {
             "axes": {
                 "horizontal": 0,

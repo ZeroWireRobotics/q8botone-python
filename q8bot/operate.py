@@ -5,6 +5,18 @@ This is the latest control script for Q8bot (using ESPNow). Run this script
 in your laptop with an ESP32C3 connected and control the robot via keyboard.
 '''
 
+import os
+# Disable SDL's enhanced HIDAPI Joy-Con driver: it exposes extra virtual
+# sensor/gyro devices that trigger a pygame bug (KeyError inside
+# pygame.event.get()) when the Joy-Con connects/disconnects. Must be set
+# before pygame.init().
+os.environ.setdefault("SDL_JOYSTICK_HIDAPI_SWITCH", "0")
+
+# Keep reading joystick input even when this window isn't focused, so
+# multiple operate.py instances (one per bot/controller) can run and be
+# controlled at the same time instead of only whichever window is active.
+os.environ.setdefault("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1")
+
 import time
 import pygame
 import sys
@@ -63,7 +75,7 @@ else:
 
 # Start pygame instance
 pygame.init()
-window = pygame.display.set_mode((1280, 720))
+window = pygame.display.set_mode((1280, 720), pygame.RESIZABLE)
 clock = pygame.time.Clock()
 
 # Set up pygame surface for logger
@@ -74,8 +86,6 @@ use_joystick, joystick, joystick_mapping = detect_and_init_joystick()
 input_handler = InputHandler(use_joystick, joystick, joystick_mapping)
 
 # Load appropriate instruction image based on input device
-import os
-
 def get_resource_path(relative_path):
     """Get absolute path to resource, works for dev and for PyInstaller"""
     try:
@@ -93,12 +103,40 @@ else:
 
 try:
     instruction_image = pygame.image.load(instruction_image_path)
-    # Scale image to fit the available space (1280x570)
-    instruction_image = pygame.transform.scale(instruction_image, (1280, 570))
     log.info(f"Loaded instruction image: {os.path.basename(instruction_image_path)}")
 except Exception as e:
     log.warning(f"Failed to load instruction image: {e}")
     instruction_image = None
+
+# Vertical space reserved above the image for logger messages
+IMAGE_TOP_OFFSET = 150
+
+# Cached scaled copy of instruction_image, recomputed only when window size changes
+scaled_instruction_image = None
+scaled_for_window_size = None
+
+
+def get_scaled_instruction_image(window_size):
+    """Rescale instruction_image to fit within window_size, preserving aspect ratio."""
+    global scaled_instruction_image, scaled_for_window_size
+
+    if instruction_image is None:
+        return None
+
+    if scaled_for_window_size == window_size:
+        return scaled_instruction_image
+
+    window_width, window_height = window_size
+    available_width = max(window_width, 1)
+    available_height = max(window_height - IMAGE_TOP_OFFSET, 1)
+
+    img_width, img_height = instruction_image.get_size()
+    scale = min(available_width / img_width, available_height / img_height)
+    scaled_size = (max(int(img_width * scale), 1), max(int(img_height * scale), 1))
+
+    scaled_instruction_image = pygame.transform.smoothscale(instruction_image, scaled_size)
+    scaled_for_window_size = window_size
+    return scaled_instruction_image
 
 # Initialize kinamatics solver and Q8bot ESPNow instance
 leg = k_solver(CENTER_DIST, L1, L2, L1, L2)
@@ -124,14 +162,27 @@ time.sleep(2)
 
 while True:
     clock.tick(SPEED)
-    pygame.event.get()
+    try:
+        frame_events = pygame.event.get()
+    except SystemError:
+        # Known pygame/SDL bug: sensor/device events from Joy-Con style
+        # controllers can raise a KeyError inside pygame's event pump.
+        # Safe to ignore and continue polling next frame.
+        frame_events = []
+
+    for event in frame_events:
+        if event.type == pygame.VIDEORESIZE:
+            window = pygame.display.set_mode((event.w, event.h), pygame.RESIZABLE)
+            Q8Logger.set_pygame_surface(window)
 
     # Clear screen and render logger messages
     window.fill((0, 0, 0))  # Black background
 
-    # Draw instruction image below logger (if loaded)
-    if instruction_image is not None:
-        window.blit(instruction_image, (0, 150))  # Position at y=150 (below logger)
+    # Draw instruction image below logger, scaled to fit the current window
+    current_image = get_scaled_instruction_image(window.get_size())
+    if current_image is not None:
+        image_x = (window.get_width() - current_image.get_width()) // 2
+        window.blit(current_image, (image_x, IMAGE_TOP_OFFSET))
 
     Q8Logger.render_pygame_messages()  # Draw logger on top
     pygame.display.flip()

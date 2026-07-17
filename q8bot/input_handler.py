@@ -94,6 +94,8 @@ class InputHandler:
             pygame.event.pump()
             if self.joystick_mapping and action_name in self.joystick_mapping['actions']:
                 button_num = self.joystick_mapping['actions'][action_name]
+                if isinstance(button_num, (list, tuple)):
+                    return any(self.joystick.get_button(b) for b in button_num)
                 return self.joystick.get_button(button_num)
             return False
         else:
@@ -104,16 +106,16 @@ class InputHandler:
             return False
 
 
-def detect_and_init_joystick():
+KEYBOARD_LABEL = "Keyboard (Default)"
+
+
+def list_available_joysticks():
     """
-    Detect and initialize compatible joystick.
-    Falls back to keyboard if no compatible joystick found.
+    Enumerate all connected joysticks and check their compatibility.
+    Does not select or commit to any input device.
 
     Returns:
-        tuple: (use_joystick, joystick, joystick_mapping)
-            - use_joystick: bool, True if joystick should be used
-            - joystick: pygame.joystick.Joystick object or None
-            - joystick_mapping: dict from get_joystick_mapping() or None
+        list of dict: [{'index': int, 'name': str, 'compatible': bool}, ...]
     """
     pygame.joystick.init()
     joystick_count = pygame.joystick.get_count()
@@ -121,30 +123,114 @@ def detect_and_init_joystick():
     Q8Logger.debug("=" * 60)
     Q8Logger.debug(f"Detected {joystick_count} joystick(s)")
 
-    if joystick_count > 0:
-        # Try each joystick until we find a compatible one
-        for i in range(joystick_count):
-            js = pygame.joystick.Joystick(i)
-            js.init()
-            Q8Logger.debug(f"\nJoystick {i}: {js.get_name()}")
-            Q8Logger.debug(f"  Axes: {js.get_numaxes()}, Buttons: {js.get_numbuttons()}")
-
-            if check_joystick_compatible(js):
-                joystick_mapping = get_joystick_mapping(js)
-                Q8Logger.debug(f"\n>>> Using joystick: '{js.get_name()}' <<<")
-
-                if joystick_mapping:
-                    if joystick_mapping['recognized']:
-                        Q8Logger.debug(">>> Controller is RECOGNIZED (custom mapping loaded) <<<")
-                    else:
-                        Q8Logger.warning("Controller not recognized - using Generic Controller fallback mapping")
-                else:
-                    Q8Logger.warning("Error loading joystick mapping")
-                    continue
-
-                Q8Logger.debug("=" * 60)
-                return True, js, joystick_mapping
-
-    Q8Logger.debug("\n>>> No compatible joystick found - using KEYBOARD control <<<")
+    devices = []
+    for i in range(joystick_count):
+        js = pygame.joystick.Joystick(i)
+        js.init()
+        compatible = check_joystick_compatible(js)
+        Q8Logger.debug(f"Joystick {i}: {js.get_name()} "
+                       f"(Axes: {js.get_numaxes()}, Buttons: {js.get_numbuttons()}, "
+                       f"Compatible: {compatible})")
+        devices.append({'index': i, 'name': js.get_name(), 'compatible': compatible})
     Q8Logger.debug("=" * 60)
-    return False, None, None
+
+    return devices
+
+
+def prompt_controller_selection(devices):
+    """
+    Show a dropdown dialog letting the user choose which input device to use.
+    Always offers "Keyboard (Default)" alongside any compatible joysticks found.
+
+    Args:
+        devices: list of dicts from list_available_joysticks()
+
+    Returns:
+        int or None: index of the selected joystick, or None to use keyboard
+    """
+    import tkinter as tk
+    from tkinter import ttk
+
+    compatible_devices = [d for d in devices if d['compatible']]
+    labels = [KEYBOARD_LABEL] + [f"{d['name']} (Joystick {d['index']})" for d in compatible_devices]
+
+    root = tk.Tk()
+    root.title("Q8bot - Select Input Device")
+    root.resizable(False, False)
+
+    window_width, window_height = 340, 130
+    x = (root.winfo_screenwidth() - window_width) // 2
+    y = (root.winfo_screenheight() - window_height) // 2
+    root.geometry(f"{window_width}x{window_height}+{x}+{y}")
+    root.attributes("-topmost", True)
+
+    tk.Label(root, text="Select control input:").pack(pady=(15, 5))
+
+    selected = tk.StringVar(value=labels[0])
+    combo = ttk.Combobox(root, textvariable=selected, values=labels, state="readonly", width=35)
+    combo.current(0)
+    combo.pack(pady=5)
+
+    result = {'choice': labels[0]}
+
+    def on_ok():
+        result['choice'] = selected.get()
+        root.destroy()
+
+    tk.Button(root, text="OK", command=on_ok, width=10).pack(pady=(10, 5))
+    root.protocol("WM_DELETE_WINDOW", on_ok)  # closing window keeps the default (keyboard)
+    root.mainloop()
+
+    chosen_label = result['choice']
+    for d in compatible_devices:
+        if chosen_label == f"{d['name']} (Joystick {d['index']})":
+            return d['index']
+    return None
+
+
+def init_selected_joystick(index):
+    """
+    Initialize the joystick chosen by the user and build its control mapping.
+
+    Args:
+        index: int or None, joystick index from prompt_controller_selection(),
+            or None to use keyboard control.
+
+    Returns:
+        tuple: (use_joystick, joystick, joystick_mapping)
+            - use_joystick: bool, True if joystick should be used
+            - joystick: pygame.joystick.Joystick object or None
+            - joystick_mapping: dict from get_joystick_mapping() or None
+    """
+    if index is None:
+        Q8Logger.debug(">>> Using KEYBOARD control <<<")
+        return False, None, None
+
+    js = pygame.joystick.Joystick(index)
+    js.init()
+    joystick_mapping = get_joystick_mapping(js)
+
+    if joystick_mapping is None:
+        Q8Logger.warning(f"Error loading mapping for '{js.get_name()}' - falling back to keyboard")
+        return False, None, None
+
+    Q8Logger.debug(f">>> Using joystick: '{js.get_name()}' <<<")
+    if joystick_mapping['recognized']:
+        Q8Logger.debug(">>> Controller is RECOGNIZED (custom mapping loaded) <<<")
+    else:
+        Q8Logger.warning("Controller not recognized - using Generic Controller fallback mapping")
+
+    return True, js, joystick_mapping
+
+
+def detect_and_init_joystick():
+    """
+    Show a device-selection dropdown and initialize the chosen input device.
+    Falls back to keyboard if no compatible joystick is found or selected.
+
+    Returns:
+        tuple: (use_joystick, joystick, joystick_mapping)
+    """
+    devices = list_available_joysticks()
+    selected_index = prompt_controller_selection(devices)
+    return init_selected_joystick(selected_index)
