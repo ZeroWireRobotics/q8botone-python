@@ -4,9 +4,15 @@ Written by yufeng.wu0902@gmail.com
 
 Python class that passes arguments to connected ESP32C3 controller, which
 then sends commands wirelessly to the robot via ESPNow.
+
+Wire format: see protocol.py - a binary framed protocol
+([start][msg type][length][payload][CRC-16]), not raw ASCII.
 '''
 
+import struct
 import serial
+
+from protocol import CmdType, ReplyType, build_frame, read_frame
 
 DEFAULT_JOINTLIST = [i + 11 for i in range(8)]
 
@@ -23,42 +29,56 @@ class q8_espnow:
         self.serialHandler = serial.Serial(self.DEVICENAME, self.BAUDRATE)
 
     def enable_torque(self):
-        self.serialHandler.write("0,0,0,0,0,0,0,0,0,0,1;".encode())
+        self.serialHandler.write(build_frame(CmdType.TORQUE_SET, bytes([1])))
         self.torque_on = True
         return True
-    
+
     def disable_torque(self):
-        self.serialHandler.write("0,0,0,0,0,0,0,0,0,0,0;".encode())
+        self.serialHandler.write(build_frame(CmdType.TORQUE_SET, bytes([0])))
         self.torque_on = False
         return True
-    
+
     def check_battery(self):
-        self.serialHandler.write("0,0,0,0,0,0,0,0,1,0,0;".encode())
+        self.serialHandler.write(build_frame(CmdType.BATTERY_REQUEST, b""))
         return True
-    
+
     def record_data(self):
-        self.serialHandler.write("0,0,0,0,0,0,0,0,2,0,0;".encode())
-        return True
-    
+        return self.move_all([0] * 8, 0, True)
+
     def finish_recording(self):
-        self.serialHandler.write("0,0,0,0,0,0,0,0,3,0,1;".encode())
+        self.serialHandler.write(build_frame(CmdType.RECORD_SEND, b""))
         return True
-    
+
     def send_jump(self):
-        self.serialHandler.write("0,0,0,0,0,0,0,0,4,0,0;".encode())
+        self.serialHandler.write(build_frame(CmdType.JUMP, b""))
         return True
+
+    def read_reply(self, timeout=None):
+        """
+        Read one reply frame (e.g. a pending battery/recorded-data response).
+
+        Returns:
+            (ReplyType, payload_bytes) or None if nothing valid was read.
+        """
+        result = read_frame(self.serialHandler, timeout)
+        if result is None:
+            return None
+        msg_type, payload = result
+        try:
+            return ReplyType(msg_type), payload
+        except ValueError:
+            return None
 
     def move_all(self, joints_pos, dur = 0, record = True):
         # Expects 8 positions in deg. For example: [0, 90, 0, 90, 0, 90, 0, 90]
         try:
-            # If record is true, the 9th element is set to value 2. Else 0.
-            cmd = ",".join(map(str, joints_pos)) + f",{record*2}," + f"{dur}," + f"{int(self.torque_on)};" 
-            # print(cmd)
-            self.serialHandler.write(cmd.encode())
-        except:
+            angles_tenths = [round(a * 10) for a in joints_pos]
+            payload = struct.pack('<8hHB', *angles_tenths, dur, int(record))
+            self.serialHandler.write(build_frame(CmdType.MOVE, payload))
+        except Exception:
             return False
         return True
-    
+
     def move_mirror(self, joint_pos, dur = 0):
         # Expects a pair of pos for one leg, which will be mirrored 4times.
         mirrored_pos = []

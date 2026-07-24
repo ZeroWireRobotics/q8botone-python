@@ -23,6 +23,7 @@ import sys
 import argparse
 from kinematics_solver import k_solver
 from espnow import q8_espnow
+from protocol import ReplyType
 from helpers import XiaoPortFinder, Q8Logger
 from gait_manager import GaitManager, GAITS
 from routine_generator import show_range, greet
@@ -269,15 +270,14 @@ while True:
         else:
             try:
                 while q8.serialHandler.in_waiting > 0:  # Check if there is any data waiting to be read
-                    raw_data = q8.serialHandler.readline().decode('utf-8').strip() # Read a line and decode it
-                    raw_data = raw_data.split()
-                    while raw_data and raw_data[-1] == '0':
-                        raw_data.pop()
-                    # print(f"Received data: {raw_data}")
-                    if request == "battery":
-                        log.info(f"Battery: {int(raw_data[0])}%")
+                    reply = q8.read_reply()
+                    if reply is None:
+                        break
+                    reply_type, payload = reply
+                    if request == "battery" and reply_type == ReplyType.BATTERY_REPLY:
+                        log.info(f"Battery: {payload[0]}%")
                 request = "none"
-            except:
+            except Exception:
                 log.debug("Data reading failed. Continuing...")
 
 q8.disable_torque()
