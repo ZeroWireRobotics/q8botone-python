@@ -154,7 +154,13 @@ q8 = q8_espnow(com_port)
 q8.enable_torque()
 
 # Initialize GaitManager
-gait_names = list(GAITS.keys())
+# Non-fastest tier companions (e.g. TROT_SLOW, TROT_MED) are excluded from
+# the switch_gait cycle - they're internal companions GaitManager blends
+# into automatically (see SPEED_TIER_CHAINS), not user-selectable presets
+# in their own right. Each chain's last entry is the gait itself, which
+# stays selectable as normal.
+_tier_companions = {name for chain in GaitManager.SPEED_TIER_CHAINS.values() for name in chain[:-1]}
+gait_names = [name for name in GAITS.keys() if name not in _tier_companions]
 gait_manager = GaitManager(leg, GAITS)
 
 # Starting location of leg end effector in x and y
@@ -202,6 +208,10 @@ while True:
         requested_direction = input_handler.get_movement_direction()
 
         if requested_direction:
+            # Blend fast/slow speed tier from joystick push magnitude
+            # (no-op unless the active gait has a slow companion)
+            gait_manager.update_speed_tier(input_handler.get_movement_magnitude())
+
             # Start or switch movement direction
             if gait_manager.start_movement(requested_direction):
                 # Execute current trajectory

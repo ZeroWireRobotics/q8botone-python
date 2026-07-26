@@ -234,8 +234,8 @@ def generate_bound_trajectories(leg, gait_params):
     #   FL        FR  (same phase)
     #   BL        BR  (offset phase)
     trajectories = {
-        'f': append_pos_list(move_forward, move_forward, p2, p2),  # Forward
-        'b': append_pos_list(move_backward, move_backward, n2, n2), # Backward
+        'f': append_pos_list(move_backward, move_backward, n2, n2),  # Forward
+        'b': append_pos_list(move_forward, move_forward, p2, p2),    # Backward
     }
 
     return trajectories
@@ -273,8 +273,8 @@ def generate_pronk_trajectories(leg, gait_params):
 
     # All legs move together (no phase shift)
     trajectories = {
-        'f': append_pos_list(move_forward, move_forward, move_forward, move_forward),  # Forward
-        'b': append_pos_list(move_backward, move_backward, move_backward, move_backward), # Backward
+        'f': append_pos_list(move_backward, move_backward, move_backward, move_backward),  # Forward
+        'b': append_pos_list(move_forward, move_forward, move_forward, move_forward),      # Backward
     }
 
     return trajectories

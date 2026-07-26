@@ -5,13 +5,15 @@ Unified input handler for Q8bot control.
 Abstracts keyboard and joystick input into a common interface.
 '''
 
+import sys
 import pygame
 from control_config import (
     KEYBOARD_MAPPING,
     check_joystick_compatible,
     get_joystick_mapping,
     apply_deadzone,
-    get_joystick_direction
+    get_joystick_direction,
+    get_joystick_magnitude
 )
 from helpers import Q8Logger
 
@@ -32,6 +34,24 @@ class InputHandler:
         self.joystick = joystick
         self.joystick_mapping = joystick_mapping
 
+    def _get_deadzoned_axes(self):
+        """
+        Read and deadzone-apply the joystick's horizontal/vertical axes.
+        Joystick mode only - caller is responsible for checking use_joystick.
+
+        Returns:
+            tuple: (axis0, axis1) post-deadzone
+        """
+        pygame.event.pump()
+        axes = self.joystick_mapping['axes'] if self.joystick_mapping else {
+            'horizontal': 0, 'vertical': 1, 'deadzone': 0.1
+        }
+        deadzone = axes.get('deadzone', 0.1)
+
+        axis0 = apply_deadzone(self.joystick.get_axis(axes['horizontal']), deadzone)
+        axis1 = apply_deadzone(self.joystick.get_axis(axes['vertical']), deadzone)
+        return axis0, axis1
+
     def get_movement_direction(self):
         """
         Get current movement direction from keyboard or joystick.
@@ -42,15 +62,7 @@ class InputHandler:
                 For keyboard: Returns 6 basic commands (f, b, l, r, fl, fr)
         """
         if self.use_joystick:
-            pygame.event.pump()
-            axes = self.joystick_mapping['axes'] if self.joystick_mapping else {
-                'horizontal': 0, 'vertical': 1, 'deadzone': 0.1
-            }
-            deadzone = axes.get('deadzone', 0.1)
-
-            axis0 = apply_deadzone(self.joystick.get_axis(axes['horizontal']), deadzone)
-            axis1 = apply_deadzone(self.joystick.get_axis(axes['vertical']), deadzone)
-
+            axis0, axis1 = self._get_deadzoned_axes()
             # Use analog mode for joystick to get full range of commands
             return get_joystick_direction(axis0, axis1, analog_mode=True)
         else:
@@ -70,6 +82,22 @@ class InputHandler:
             elif keys[KEYBOARD_MAPPING['movement']['forward_right']]:
                 return 'fr_0.75'  # Map to moderate forward-right turn
             return None
+
+    def get_movement_magnitude(self):
+        """
+        Get current joystick push distance from center (0.0-1.0), for
+        speed-tier selection (e.g. fast vs slow trot). Keyboard mode has no
+        analog concept of "how far pressed", so it always reports full
+        magnitude - no speed tiering for keyboard input.
+
+        Returns:
+            float: 0.0 (centered/keyboard-inactive) to 1.0 (fully pushed)
+        """
+        if self.use_joystick:
+            axis0, axis1 = self._get_deadzoned_axes()
+            return get_joystick_magnitude(axis0, axis1)
+        else:
+            return 1.0
 
     def is_movement_input(self):
         """
@@ -152,7 +180,7 @@ def prompt_controller_selection(devices):
     from tkinter import ttk
 
     compatible_devices = [d for d in devices if d['compatible']]
-    labels = [KEYBOARD_LABEL] + [f"{d['name']} (Joystick {d['index']})" for d in compatible_devices]
+    labels = [f"{d['name']} (Joystick {d['index']})" for d in compatible_devices] + [KEYBOARD_LABEL]
 
     root = tk.Tk()
     root.title("Q8bot - Select Input Device")
@@ -171,15 +199,23 @@ def prompt_controller_selection(devices):
     combo.current(0)
     combo.pack(pady=5)
 
-    result = {'choice': labels[0]}
+    result = {'choice': labels[0], 'cancelled': False}
 
     def on_ok():
         result['choice'] = selected.get()
         root.destroy()
 
+    def on_cancel():
+        result['cancelled'] = True
+        root.destroy()
+
     tk.Button(root, text="OK", command=on_ok, width=10).pack(pady=(10, 5))
-    root.protocol("WM_DELETE_WINDOW", on_ok)  # closing window keeps the default (keyboard)
+    root.protocol("WM_DELETE_WINDOW", on_cancel)  # closing the window aborts, does not proceed
     root.mainloop()
+
+    if result['cancelled']:
+        Q8Logger.info("Input device selection cancelled - exiting.")
+        sys.exit(0)
 
     chosen_label = result['choice']
     for d in compatible_devices:
@@ -205,7 +241,7 @@ def prompt_bot_selection(devices, com_ports):
     from tkinter import ttk
 
     compatible_devices = [d for d in devices if d['compatible']]
-    controller_labels = [KEYBOARD_LABEL] + [f"{d['name']} (Joystick {d['index']})" for d in compatible_devices]
+    controller_labels = [f"{d['name']} (Joystick {d['index']})" for d in compatible_devices] + [KEYBOARD_LABEL]
 
     root = tk.Tk()
     root.title("Q8bot - Select Port and Input Device")
@@ -230,16 +266,24 @@ def prompt_bot_selection(devices, com_ports):
     controller_combo.current(0)
     controller_combo.pack(pady=5)
 
-    result = {'port': port_var.get(), 'choice': controller_labels[0]}
+    result = {'port': port_var.get(), 'choice': controller_labels[0], 'cancelled': False}
 
     def on_ok():
         result['port'] = port_var.get()
         result['choice'] = controller_var.get()
         root.destroy()
 
+    def on_cancel():
+        result['cancelled'] = True
+        root.destroy()
+
     tk.Button(root, text="OK", command=on_ok, width=10).pack(pady=(15, 5))
-    root.protocol("WM_DELETE_WINDOW", on_ok)  # closing window keeps current selections
+    root.protocol("WM_DELETE_WINDOW", on_cancel)  # closing the window aborts, does not proceed
     root.mainloop()
+
+    if result['cancelled']:
+        Q8Logger.info("Port/input device selection cancelled - exiting.")
+        sys.exit(0)
 
     chosen_port = result['port']
     chosen_label = result['choice']

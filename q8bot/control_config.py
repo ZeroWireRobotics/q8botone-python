@@ -5,6 +5,7 @@ Control mappings configuration for Q8bot.
 Defines keyboard and joystick control schemes using a two-layer mapping system.
 '''
 
+import math
 import pygame
 from helpers import Q8Logger
 
@@ -239,6 +240,23 @@ def apply_deadzone(value, deadzone):
         float: 0.0 if within deadzone, otherwise original value
     """
     return 0.0 if abs(value) < deadzone else value
+
+
+def get_joystick_magnitude(axis0, axis1):
+    """
+    Compute overall joystick push distance from center (0.0-1.0), independent
+    of direction. Used for speed-tier selection (e.g. fast vs slow trot) -
+    a separate concern from the angle-based direction/turn-radius logic in
+    get_joystick_direction().
+
+    Args:
+        axis0: float, left/right axis value (post-deadzone)
+        axis1: float, forward/backward axis value (post-deadzone)
+
+    Returns:
+        float: 0.0 (centered) to 1.0 (fully pushed), clamped
+    """
+    return min(1.0, math.hypot(axis0, axis1))
 
 
 def get_joystick_direction(axis0, axis1, analog_mode=False):
