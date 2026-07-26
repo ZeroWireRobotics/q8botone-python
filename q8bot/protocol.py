@@ -24,12 +24,33 @@ class CmdType(IntEnum):
     BATTERY_REQUEST = 0x03
     RECORD_SEND = 0x04
     JUMP = 0x05
+    GAIT_RUN = 0x06   # {gait_id: uint8, direction_id: uint8} - run a local gait/direction autonomously
+    GAIT_STOP = 0x07  # no payload - stop autonomous gait, hand control back to raw MOVE
 
 
 class ReplyType(IntEnum):
     """Robot -> host replies."""
     BATTERY_REPLY = 0x81
     RECORD_DATA_REPLY = 0x82
+
+
+# Canonical direction ordering for GAIT_RUN's direction_id (0-11). Must match
+# the order firmware/q8bot_robot/include/gaitTables.h's *_DIRECTIONS arrays
+# use (see export_gait_tables.py) and the firmware protocol.h comment.
+DIRECTION_ORDER = [
+    'f', 'b', 'l', 'r',
+    'fl_0.75', 'fl_0.5', 'fr_0.75', 'fr_0.5',
+    'bl_0.75', 'bl_0.5', 'br_0.75', 'br_0.5',
+]
+
+# gait_id -> GAITS name, for GAIT_RUN. Extend as more gaits get native tables.
+# Slow/med/fast mirror TROT_FAST's own SPEED_TIER_CHAINS ordering, so
+# TROT_LOCAL (see operate.py) can blend across the same 3 tiers natively.
+GAIT_IDS = {
+    0: 'TROT_SLOW',
+    1: 'TROT_MED',
+    2: 'TROT_FAST',
+}
 
 
 def crc16_arc(data: bytes, crc: int = 0x0000) -> int:

@@ -23,7 +23,7 @@ import sys
 import argparse
 from kinematics_solver import k_solver
 from espnow import q8_espnow
-from protocol import ReplyType
+from protocol import ReplyType, DIRECTION_ORDER, GAIT_IDS
 from helpers import XiaoPortFinder, Q8Logger
 from gait_manager import GaitManager, GAITS
 from routine_generator import show_range, greet
@@ -43,6 +43,24 @@ L2 = 40             # Lower leg length
 # Pygame config
 SPEED = 200
 res = 0.2
+
+# Native on-robot gait support (see protocol.py, GaitRunner in firmware).
+# Direction string -> canonical index the robot's gaitTables.h uses.
+DIRECTION_TO_ID = {name: i for i, name in enumerate(DIRECTION_ORDER)}
+# Name -> gait_id, reverse of protocol.GAIT_IDS.
+GAIT_NAME_TO_ID = {name: gait_id for gait_id, name in GAIT_IDS.items()}
+# Selecting this gait (via switch_gait) means "drive natively": any
+# direction, blended across the same slow/med/fast tier chain and
+# thresholds as TROT_FAST's own SPEED_TIER_CHAINS (magnitude -> gait_id
+# instead of magnitude -> streamed trajectory). Independent of TROT_FAST
+# itself, which keeps streaming raw positions exactly as before.
+NATIVE_GAIT_SELECTOR = 'TROT_LOCAL'
+NATIVE_TIER_CHAIN = GaitManager.SPEED_TIER_CHAINS['TROT_FAST']  # ['TROT_SLOW','TROT_MED','TROT_FAST']
+NATIVE_TIER_BOUNDARIES = GaitManager.TIER_BOUNDARIES
+# Low-rate keep-alive: bounds how long a single dropped GAIT_RUN frame can
+# leave the host and robot silently out of sync (no ACK/retry otherwise -
+# a resend at this rate is far cheaper than going back to per-tick streaming).
+NATIVE_GAIT_RESEND_INTERVAL = 0.25  # seconds
 
 # Helper Functions
 def move_xy(x, y, dur = 0, deg = True):
@@ -65,6 +83,11 @@ movement = False
 exit = False
 record = False
 request = "none"
+native_gait_active = False  # Is the robot currently running a gait on its own?
+native_direction_id = None  # Last direction_id sent while native_gait_active
+native_gait_id = None       # Last gait_id (tier) sent while native_gait_active
+native_tier_index = len(NATIVE_TIER_CHAIN) - 1  # Starts at fastest, like TROT_FAST's own tiering
+native_last_sent_time = 0.0  # For the low-rate keep-alive resend
 
 # Start pygame instance
 pygame.init()
@@ -208,21 +231,50 @@ while True:
         requested_direction = input_handler.get_movement_direction()
 
         if requested_direction:
-            # Blend fast/slow speed tier from joystick push magnitude
-            # (no-op unless the active gait has a slow companion)
-            gait_manager.update_speed_tier(input_handler.get_movement_magnitude())
+            if gait_manager.current_gait == NATIVE_GAIT_SELECTOR:
+                # TROT_LOCAL selected: drive natively, blending slow/med/fast
+                # by magnitude exactly like TROT_FAST's own tiering, just
+                # selecting a gait_id to send instead of a local trajectory.
+                direction_id = DIRECTION_TO_ID.get(requested_direction)
+                if direction_id is not None:
+                    magnitude = input_handler.get_movement_magnitude()
+                    native_tier_index = GaitManager.resolve_tier_index(
+                        NATIVE_TIER_CHAIN, NATIVE_TIER_BOUNDARIES, native_tier_index, magnitude
+                    )
+                    gait_id = GAIT_NAME_TO_ID[NATIVE_TIER_CHAIN[native_tier_index]]
 
-            # Start or switch movement direction
-            if gait_manager.start_movement(requested_direction):
-                # Execute current trajectory
-                pos = gait_manager.tick()
-                if pos:
-                    q8.move_all(pos, 0, record)
+                    now = time.time()
+                    changed = (
+                        not native_gait_active
+                        or direction_id != native_direction_id
+                        or gait_id != native_gait_id
+                    )
+                    resend_due = now - native_last_sent_time >= NATIVE_GAIT_RESEND_INTERVAL
+                    if changed or resend_due:
+                        q8.run_gait(gait_id, direction_id)
+                        native_gait_active = True
+                        native_direction_id = direction_id
+                        native_gait_id = gait_id
+                        native_last_sent_time = now
             else:
-                # Failed to start movement
-                movement = False
+                # Normal streaming path, unchanged - includes TROT_FAST's
+                # fast/med/slow tiering (still raw positions, no GAIT_RUN).
+                gait_manager.update_speed_tier(input_handler.get_movement_magnitude())
+
+                if gait_manager.start_movement(requested_direction):
+                    pos = gait_manager.tick()
+                    if pos:
+                        q8.move_all(pos, 0, record)
+                else:
+                    # Failed to start movement
+                    movement = False
         else:
             # No movement input - transition to idle
+            if native_gait_active:
+                q8.stop_gait()
+                native_gait_active = False
+                native_direction_id = None
+                native_gait_id = None
             move_xy(pos_x, pos_y, 0)
             q8.finish_recording()
             record = False
@@ -252,6 +304,10 @@ while True:
                 # Update position to match new gait
                 pos_x, pos_y = GAITS[new_gait][1], GAITS[new_gait][2]
                 move_xy(pos_x, pos_y, 500)
+                if new_gait == NATIVE_GAIT_SELECTOR:
+                    # Start fresh at the fastest tier, matching TROT_FAST's
+                    # own tiering convention on a fresh load_gait().
+                    native_tier_index = len(NATIVE_TIER_CHAIN) - 1
                 log.info(f"Switched to {new_gait}")
             else:
                 log.error(f"Failed to load gait: {new_gait}")

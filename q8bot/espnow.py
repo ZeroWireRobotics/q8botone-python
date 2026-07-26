@@ -53,6 +53,20 @@ class q8_espnow:
         self.serialHandler.write(build_frame(CmdType.JUMP, b""))
         return True
 
+    def run_gait(self, gait_id, direction_id):
+        """
+        Tell the robot to autonomously run a local gait/direction (see
+        protocol.GAIT_IDS/DIRECTION_ORDER) instead of streaming per-tick
+        MOVE frames. A raw move_all()/move_mirror() call always stops this
+        first on the robot side - no need to call stop_gait() before them.
+        """
+        self.serialHandler.write(build_frame(CmdType.GAIT_RUN, bytes([gait_id, direction_id])))
+        return True
+
+    def stop_gait(self):
+        self.serialHandler.write(build_frame(CmdType.GAIT_STOP, b""))
+        return True
+
     def read_reply(self, timeout=None):
         """
         Read one reply frame (e.g. a pending battery/recorded-data response).

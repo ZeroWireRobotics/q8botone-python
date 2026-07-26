@@ -30,6 +30,13 @@ GAITS = {
     'TROT_MED':  ['trot', 9.75, 43.36, 40, 20, 0, 15, 30],
     'TROT_HIGH': ['trot', 9.75, 60, 20, 10, 0, 15, 30],
     'TROT_LOW':  ['trot', 9.75, 25, 20, 10, 0, 15, 30],
+    # Separate, explicitly switch_gait-selectable entry: while this is the
+    # active gait, operate.py bypasses per-tick streaming entirely and
+    # drives the robot via the native GAIT_RUN command instead (see
+    # protocol.py/GaitRunner) - unrelated to TROT_FAST's tiering above.
+    # Params match TROT_MED's exactly since gaitTables.h was exported from
+    # TROT_MED - keep them in sync if either changes.
+    'TROT_LOCAL': ['trot', 9.75, 43.36, 40, 20, 0, 15, 30],
     'CRAWL':     ['crawl', 9.75, 40, 10, 20, 0, 50, 25],
     'BOUND':     ['bound', 9.75, 33.36, 40, 0, 20, 50, 10],
     # 'PRONK':     ['pronk', 9.75, 33.36, 40, 0, 20, 60, 10],
@@ -174,11 +181,42 @@ class GaitManager:
 
         return True
 
+    @staticmethod
+    def resolve_tier_index(chain, boundaries, current_index, magnitude):
+        """
+        Climb/drop through an ordered tier chain based on magnitude, with
+        per-boundary hysteresis to avoid flicker near a threshold. Shared
+        logic: used internally by update_speed_tier() for gaits that stream
+        (e.g. TROT_FAST), and reusable externally (e.g. operate.py's native
+        TROT_LOCAL tier selection) for identical thresholds/feel.
+
+        Args:
+            chain: list, tier names ordered slowest->fastest
+            boundaries: list of (up_threshold, down_threshold), len(chain)-1
+            current_index: int, current position in chain
+            magnitude: float, joystick push distance from center (0.0-1.0)
+
+        Returns:
+            int: the resolved index into chain
+        """
+        idx = current_index
+
+        # Climb toward faster tiers while magnitude clears each boundary's
+        # up-threshold (handles a big sudden push skipping several tiers).
+        while idx < len(chain) - 1 and magnitude >= boundaries[idx][0]:
+            idx += 1
+
+        # Drop toward slower tiers while magnitude falls under each
+        # boundary's down-threshold.
+        while idx > 0 and magnitude < boundaries[idx - 1][1]:
+            idx -= 1
+
+        return idx
+
     def update_speed_tier(self, magnitude):
         """
         Blend across the active gait's speed-tier chain based on joystick
-        push magnitude (0.0-1.0), with per-boundary hysteresis to avoid
-        flicker near a threshold. No-op unless the currently loaded gait has
+        push magnitude (0.0-1.0). No-op unless the currently loaded gait has
         a tier chain (see SPEED_TIER_CHAINS) - other gaits are unaffected.
 
         Args:
@@ -187,17 +225,7 @@ class GaitManager:
         if not self._tiering_active:
             return
 
-        idx = self._speed_tier_index
-
-        # Climb toward faster tiers while magnitude clears each boundary's
-        # up-threshold (handles a big sudden push skipping several tiers).
-        while idx < len(self._tier_chain) - 1 and magnitude >= self.TIER_BOUNDARIES[idx][0]:
-            idx += 1
-
-        # Drop toward slower tiers while magnitude falls under each
-        # boundary's down-threshold.
-        while idx > 0 and magnitude < self.TIER_BOUNDARIES[idx - 1][1]:
-            idx -= 1
+        idx = self.resolve_tier_index(self._tier_chain, self.TIER_BOUNDARIES, self._speed_tier_index, magnitude)
 
         if idx != self._speed_tier_index:
             self._speed_tier_index = idx
