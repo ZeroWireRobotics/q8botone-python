@@ -30,13 +30,6 @@ GAITS = {
     'TROT_MED':  ['trot', 9.75, 43.36, 40, 20, 0, 15, 30],
     'TROT_HIGH': ['trot', 9.75, 60, 20, 10, 0, 15, 30],
     'TROT_LOW':  ['trot', 9.75, 25, 20, 10, 0, 15, 30],
-    # Separate, explicitly switch_gait-selectable entry: while this is the
-    # active gait, operate.py bypasses per-tick streaming entirely and
-    # drives the robot via the native GAIT_RUN command instead (see
-    # protocol.py/GaitRunner) - unrelated to TROT_FAST's tiering above.
-    # Params match TROT_MED's exactly since gaitTables.h was exported from
-    # TROT_MED - keep them in sync if either changes.
-    'TROT_LOCAL': ['trot', 9.75, 43.36, 40, 20, 0, 15, 30],
     'CRAWL':     ['crawl', 9.75, 40, 10, 20, 0, 50, 25],
     'BOUND':     ['bound', 9.75, 33.36, 40, 0, 20, 50, 10],
     # 'PRONK':     ['pronk', 9.75, 33.36, 40, 0, 20, 60, 10],
@@ -188,7 +181,7 @@ class GaitManager:
         per-boundary hysteresis to avoid flicker near a threshold. Shared
         logic: used internally by update_speed_tier() for gaits that stream
         (e.g. TROT_FAST), and reusable externally (e.g. operate.py's native
-        TROT_LOCAL tier selection) for identical thresholds/feel.
+        gait tier selection) for identical thresholds/feel.
 
         Args:
             chain: list, tier names ordered slowest->fastest
@@ -232,6 +225,35 @@ class GaitManager:
             self.current_trajectories = {self.current_gait: self._tier_trajectories[idx]}
             self.phase_index = 0  # accept the small stutter on tier change
 
+    def resolve_direction(self, requested_direction):
+        """
+        Resolve which direction key the currently loaded gait actually has
+        trajectory data for - exact match, else FALLBACK_MAP chain, else
+        unsupported. Read-only (does not touch movement state); shared by
+        start_movement() below, operate.py's native gait execution path, and
+        export_gait_tables.py, so all three agree on exactly the same
+        directions for a given gait.
+
+        Args:
+            requested_direction: Direction string (e.g., 'f', 'b', 'fl_0.75')
+
+        Returns:
+            str or None: the resolved direction key, or None if unsupported
+        """
+        if self.current_gait not in self.current_trajectories:
+            return None
+
+        gait_trajectories = self.current_trajectories[self.current_gait]
+
+        if requested_direction in gait_trajectories:
+            return requested_direction
+
+        for fallback in self.FALLBACK_MAP.get(requested_direction, []):
+            if fallback in gait_trajectories:
+                return fallback
+
+        return None
+
     def start_movement(self, direction):
         """
         Start or switch to a new movement direction.
@@ -242,29 +264,14 @@ class GaitManager:
         Returns:
             bool: True if movement started, False if trajectory not found
         """
-        if self.current_gait not in self.current_trajectories:
+        resolved = self.resolve_direction(direction)
+        if resolved is None:
             return False
 
-        gait_trajectories = self.current_trajectories[self.current_gait]
-
-        # Try exact match first
-        if direction in gait_trajectories:
-            self.current_trajectory = gait_trajectories[direction]
-            self.current_direction = direction
-            self.ongoing = True
-            return True
-
-        # Try fallback logic
-        if direction in self.FALLBACK_MAP:
-            for fallback in self.FALLBACK_MAP[direction]:
-                if fallback in gait_trajectories:
-                    self.current_trajectory = gait_trajectories[fallback]
-                    self.current_direction = direction  # Remember requested direction
-                    self.ongoing = True
-                    return True
-
-        # No suitable trajectory found
-        return False
+        self.current_trajectory = self.current_trajectories[self.current_gait][resolved]
+        self.current_direction = direction  # Remember requested direction
+        self.ongoing = True
+        return True
 
     def tick(self):
         """

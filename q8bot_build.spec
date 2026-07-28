@@ -6,7 +6,7 @@ Usage:
     pyinstaller q8bot_build.spec
 
 Output:
-    dist/Q8botOne_V0.0.2.exe - Single file executable
+    dist/Q8botOne_V0.0.4.exe - Single file executable
 """
 
 block_cipher = None
@@ -54,7 +54,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='Q8botOne_V0.0.2',
+    name='Q8botOne_V0.0.4',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

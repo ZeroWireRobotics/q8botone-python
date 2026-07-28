@@ -99,6 +99,67 @@ class InputHandler:
         else:
             return 1.0
 
+    def get_stance_offset(self, max_dx=15.0, max_dy=15.0):
+        """
+        Read the right stick's horizontal/vertical axes for static stance
+        trimming (see operate.py): left/right shifts the whole stance
+        front/back, up/down shifts stance height. Not every controller maps
+        these axes (see control_config.py's "stance_horizontal"/
+        "stance_vertical") - returns (0.0, 0.0) if unsupported, in keyboard
+        mode, or the stick is centered.
+
+        Args:
+            max_dx: float, mm offset at full horizontal deflection
+            max_dy: float, mm offset at full vertical deflection
+
+        Returns:
+            tuple: (dx, dy) in mm
+        """
+        if not self.use_joystick or not self.joystick_mapping:
+            return 0.0, 0.0
+
+        axes = self.joystick_mapping['axes']
+        h_axis = axes.get('stance_horizontal')
+        v_axis = axes.get('stance_vertical')
+        if h_axis is None or v_axis is None:
+            return 0.0, 0.0
+
+        pygame.event.pump()
+        deadzone = axes.get('deadzone', 0.1)
+        h = apply_deadzone(self.joystick.get_axis(h_axis), deadzone)
+        v = apply_deadzone(self.joystick.get_axis(v_axis), deadzone)
+
+        # Stick up is a negative axis value (pygame convention) - flip so
+        # "up" raises the stance (increases y). Swap the sign here if this
+        # turns out backwards on hardware.
+        return h * max_dx, -v * max_dy
+
+    def is_trigger_pressed(self, axis_name, threshold=0.5):
+        """
+        Check whether an analog trigger axis (e.g. RT) is pressed past a
+        threshold. Triggers report as continuous axes (idle ~-1.0, full
+        press ~+1.0), not discrete buttons, so is_action_pressed() (which
+        only handles buttons) can't be used for them. Not every controller
+        maps a given trigger (see control_config.py's e.g. "trigger_right")
+        - returns False if unsupported or in keyboard mode.
+
+        Args:
+            axis_name: str, key into the controller's "axes" dict
+            threshold: float, axis value above which the trigger counts as pressed
+
+        Returns:
+            bool
+        """
+        if not self.use_joystick or not self.joystick_mapping:
+            return False
+
+        axis_idx = self.joystick_mapping['axes'].get(axis_name)
+        if axis_idx is None:
+            return False
+
+        pygame.event.pump()
+        return self.joystick.get_axis(axis_idx) > threshold
+
     def is_movement_input(self):
         """
         Check if any movement input is active.
@@ -136,6 +197,11 @@ class InputHandler:
 
 KEYBOARD_LABEL = "Keyboard (Default)"
 
+# Gait execution mode dropdown - see operate.py's use_local_gaits.
+LOCAL_GAITS_LABEL = "Local gaits (Default)"
+REMOTE_GAITS_LABEL = "Remotely generated gaits"
+GAIT_MODE_LABELS = [LOCAL_GAITS_LABEL, REMOTE_GAITS_LABEL]
+
 
 def list_available_joysticks():
     """
@@ -167,14 +233,18 @@ def list_available_joysticks():
 
 def prompt_controller_selection(devices):
     """
-    Show a dropdown dialog letting the user choose which input device to use.
-    Always offers "Keyboard (Default)" alongside any compatible joysticks found.
+    Show a dropdown dialog letting the user choose which input device to use,
+    and whether gaits should run locally on the robot or be streamed from the
+    host. Always offers "Keyboard (Default)" alongside any compatible
+    joysticks found.
 
     Args:
         devices: list of dicts from list_available_joysticks()
 
     Returns:
-        int or None: index of the selected joystick, or None to use keyboard
+        tuple: (joystick_index, use_local_gaits)
+            - joystick_index: int or None (None = keyboard)
+            - use_local_gaits: bool, True = local gaits, False = remote
     """
     import tkinter as tk
     from tkinter import ttk
@@ -186,7 +256,7 @@ def prompt_controller_selection(devices):
     root.title("Q8bot - Select Input Device")
     root.resizable(False, False)
 
-    window_width, window_height = 340, 130
+    window_width, window_height = 340, 190
     x = (root.winfo_screenwidth() - window_width) // 2
     y = (root.winfo_screenheight() - window_height) // 2
     root.geometry(f"{window_width}x{window_height}+{x}+{y}")
@@ -199,10 +269,19 @@ def prompt_controller_selection(devices):
     combo.current(0)
     combo.pack(pady=5)
 
-    result = {'choice': labels[0], 'cancelled': False}
+    tk.Label(root, text="Gait execution:").pack(pady=(10, 5))
+
+    gait_mode = tk.StringVar(value=GAIT_MODE_LABELS[0])
+    gait_mode_combo = ttk.Combobox(root, textvariable=gait_mode, values=GAIT_MODE_LABELS,
+                                    state="readonly", width=35)
+    gait_mode_combo.current(0)
+    gait_mode_combo.pack(pady=5)
+
+    result = {'choice': labels[0], 'gait_mode': GAIT_MODE_LABELS[0], 'cancelled': False}
 
     def on_ok():
         result['choice'] = selected.get()
+        result['gait_mode'] = gait_mode.get()
         root.destroy()
 
     def on_cancel():
@@ -218,24 +297,30 @@ def prompt_controller_selection(devices):
         sys.exit(0)
 
     chosen_label = result['choice']
+    joystick_index = None
     for d in compatible_devices:
         if chosen_label == f"{d['name']} (Joystick {d['index']})":
-            return d['index']
-    return None
+            joystick_index = d['index']
+            break
+
+    use_local_gaits = result['gait_mode'] == LOCAL_GAITS_LABEL
+    return joystick_index, use_local_gaits
 
 
 def prompt_bot_selection(devices, com_ports):
     """
-    Show a single dialog with two dropdowns: COM port and input device.
+    Show a single dialog with three dropdowns: COM port, input device, and
+    gait execution mode (local vs remote).
 
     Args:
         devices: list of dicts from list_available_joysticks()
         com_ports: list of str, available COM port device names (non-empty)
 
     Returns:
-        tuple: (com_port, joystick_index)
+        tuple: (com_port, joystick_index, use_local_gaits)
             - com_port: str, the selected COM port
             - joystick_index: int or None (None = keyboard)
+            - use_local_gaits: bool, True = local gaits, False = remote
     """
     import tkinter as tk
     from tkinter import ttk
@@ -247,7 +332,7 @@ def prompt_bot_selection(devices, com_ports):
     root.title("Q8bot - Select Port and Input Device")
     root.resizable(False, False)
 
-    window_width, window_height = 360, 200
+    window_width, window_height = 360, 260
     x = (root.winfo_screenwidth() - window_width) // 2
     y = (root.winfo_screenheight() - window_height) // 2
     root.geometry(f"{window_width}x{window_height}+{x}+{y}")
@@ -259,18 +344,31 @@ def prompt_bot_selection(devices, com_ports):
     port_combo.current(0)
     port_combo.pack(pady=5)
 
-    tk.Label(root, text="Select control input:").pack(pady=(15, 5))
+    tk.Label(root, text="Select control input:").pack(pady=(10, 5))
     controller_var = tk.StringVar(value=controller_labels[0])
     controller_combo = ttk.Combobox(root, textvariable=controller_var, values=controller_labels,
                                      state="readonly", width=35)
     controller_combo.current(0)
     controller_combo.pack(pady=5)
 
-    result = {'port': port_var.get(), 'choice': controller_labels[0], 'cancelled': False}
+    tk.Label(root, text="Gait execution:").pack(pady=(10, 5))
+    gait_mode = tk.StringVar(value=GAIT_MODE_LABELS[0])
+    gait_mode_combo = ttk.Combobox(root, textvariable=gait_mode, values=GAIT_MODE_LABELS,
+                                    state="readonly", width=35)
+    gait_mode_combo.current(0)
+    gait_mode_combo.pack(pady=5)
+
+    result = {
+        'port': port_var.get(),
+        'choice': controller_labels[0],
+        'gait_mode': GAIT_MODE_LABELS[0],
+        'cancelled': False,
+    }
 
     def on_ok():
         result['port'] = port_var.get()
         result['choice'] = controller_var.get()
+        result['gait_mode'] = gait_mode.get()
         root.destroy()
 
     def on_cancel():
@@ -293,7 +391,8 @@ def prompt_bot_selection(devices, com_ports):
             joystick_index = d['index']
             break
 
-    return chosen_port, joystick_index
+    use_local_gaits = result['gait_mode'] == LOCAL_GAITS_LABEL
+    return chosen_port, joystick_index, use_local_gaits
 
 
 def init_selected_joystick(index):
@@ -340,5 +439,5 @@ def detect_and_init_joystick():
         tuple: (use_joystick, joystick, joystick_mapping)
     """
     devices = list_available_joysticks()
-    selected_index = prompt_controller_selection(devices)
+    selected_index, _use_local_gaits = prompt_controller_selection(devices)
     return init_selected_joystick(selected_index)

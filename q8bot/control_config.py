@@ -82,7 +82,22 @@ JOYSTICK_CONFIG = {
             "axes": {
                 "horizontal": 0,
                 "vertical": 1,
-                "deadzone": 0.1
+                "deadzone": 0.1,
+                # Right stick, for static stance trim (see InputHandler.
+                # get_stance_offset() / operate.py). Verified live on
+                # hardware (axis_probe.py): this controller's axis order is
+                # 0=LX, 1=LY, 2=RX, 3=RY, 4=LT, 5=RT - note RX/RY come
+                # before the triggers, unlike some other SDL2 mappings.
+                # Triggers rest at -1.0 (not 0.0), so mapping either of
+                # them here would masquerade as a permanently-deflected
+                # stick and constantly displace the stance.
+                "stance_horizontal": 2,
+                "stance_vertical": 3,
+                # RT - analog trigger axis (idles -1.0, +1.0 fully pressed),
+                # verified live (rt_probe.py). Used for 'shoot' via
+                # InputHandler.is_trigger_pressed(), not is_action_pressed()
+                # (which only handles discrete buttons).
+                "trigger_right": 5
             },
             "buttons": {
                 "top": 3,
@@ -90,7 +105,8 @@ JOYSTICK_CONFIG = {
                 "left": 2,
                 "right": 1,
                 "side1": 4,
-                "side2": 7
+                "side2": 7,
+                "side3": 5  # RB - right bumper
             }
         },
         "Generic Controller": {
@@ -119,7 +135,8 @@ JOYSTICK_CONFIG = {
         "switch_gait": "bottom",
         "jump": "left",
         "reset": "side1",
-        "exit": "side2"
+        "exit": "side2",
+        "toggle_torque": "side3"
     }
 }
 

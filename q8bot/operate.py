@@ -26,7 +26,7 @@ from espnow import q8_espnow
 from protocol import ReplyType, DIRECTION_ORDER, GAIT_IDS
 from helpers import XiaoPortFinder, Q8Logger
 from gait_manager import GaitManager, GAITS
-from routine_generator import show_range, greet
+from routine_generator import show_range, greet, shoot
 from input_handler import (
     InputHandler,
     list_available_joysticks,
@@ -45,22 +45,25 @@ SPEED = 200
 res = 0.2
 
 # Native on-robot gait support (see protocol.py, GaitRunner in firmware).
+# Whether the "Local gaits"/"Remotely generated gaits" startup dropdown
+# selected local (native) execution for every gait, or the original
+# per-tick streaming for every gait. Set once below from the dropdown.
+use_local_gaits = True
 # Direction string -> canonical index the robot's gaitTables.h uses.
 DIRECTION_TO_ID = {name: i for i, name in enumerate(DIRECTION_ORDER)}
 # Name -> gait_id, reverse of protocol.GAIT_IDS.
 GAIT_NAME_TO_ID = {name: gait_id for gait_id, name in GAIT_IDS.items()}
-# Selecting this gait (via switch_gait) means "drive natively": any
-# direction, blended across the same slow/med/fast tier chain and
-# thresholds as TROT_FAST's own SPEED_TIER_CHAINS (magnitude -> gait_id
-# instead of magnitude -> streamed trajectory). Independent of TROT_FAST
-# itself, which keeps streaming raw positions exactly as before.
-NATIVE_GAIT_SELECTOR = 'TROT_LOCAL'
-NATIVE_TIER_CHAIN = GaitManager.SPEED_TIER_CHAINS['TROT_FAST']  # ['TROT_SLOW','TROT_MED','TROT_FAST']
-NATIVE_TIER_BOUNDARIES = GaitManager.TIER_BOUNDARIES
 # Low-rate keep-alive: bounds how long a single dropped GAIT_RUN frame can
 # leave the host and robot silently out of sync (no ACK/retry otherwise -
 # a resend at this rate is far cheaper than going back to per-tick streaming).
 NATIVE_GAIT_RESEND_INTERVAL = 0.25  # seconds
+
+# Static stance trim via the right stick, while idle only (see
+# InputHandler.get_stance_offset()): max mm offset from the current gait's
+# baseline (pos_x, pos_y) at full stick deflection. Tuned by hand on
+# hardware.
+STANCE_TRIM_MAX_DX = 25.0
+STANCE_TRIM_MAX_DY = 15.0
 
 # Helper Functions
 def move_xy(x, y, dur = 0, deg = True):
@@ -86,8 +89,10 @@ request = "none"
 native_gait_active = False  # Is the robot currently running a gait on its own?
 native_direction_id = None  # Last direction_id sent while native_gait_active
 native_gait_id = None       # Last gait_id (tier) sent while native_gait_active
-native_tier_index = len(NATIVE_TIER_CHAIN) - 1  # Starts at fastest, like TROT_FAST's own tiering
+native_tier_index = 0  # Corrected below once the default gait is loaded
 native_last_sent_time = 0.0  # For the low-rate keep-alive resend
+torqued_on = True  # Toggled by the 'toggle_torque' action; movement/gait keep running either way
+stance_trimmed = False  # Is a static stance trim (right stick) currently applied?
 
 # Start pygame instance
 pygame.init()
@@ -106,14 +111,14 @@ if args.com_port:
     if not XiaoPortFinder.validate(com_port):
         log.error(f"{com_port} is not an ESP32C3 or does not exist.")
         sys.exit(1)
-    selected_joystick_index = prompt_controller_selection(available_joysticks)
+    selected_joystick_index, use_local_gaits = prompt_controller_selection(available_joysticks)
 else:
     # No COM port given - let the user pick both port and input device together
     available_ports = XiaoPortFinder.list_all()
     if not available_ports:
         log.error("No ESP32C3 controller device found.")
         sys.exit(1)
-    com_port, selected_joystick_index = prompt_bot_selection(available_joysticks, available_ports)
+    com_port, selected_joystick_index, use_local_gaits = prompt_bot_selection(available_joysticks, available_ports)
 
 use_joystick, joystick, joystick_mapping = init_selected_joystick(selected_joystick_index)
 input_handler = InputHandler(use_joystick, joystick, joystick_mapping)
@@ -197,6 +202,11 @@ if not gait_manager.load_gait(gait_names[0]):
     log.error(f"Failed to load default gait: {gait_names[0]}")
     sys.exit(1)
 
+if gait_names[0] in GaitManager.SPEED_TIER_CHAINS:
+    # Start fresh at the fastest tier, matching the streaming path's own
+    # tiering convention on a fresh load_gait().
+    native_tier_index = len(GaitManager.SPEED_TIER_CHAINS[gait_names[0]]) - 1
+
 time.sleep(2)
 
 while True:
@@ -231,17 +241,24 @@ while True:
         requested_direction = input_handler.get_movement_direction()
 
         if requested_direction:
-            if gait_manager.current_gait == NATIVE_GAIT_SELECTOR:
-                # TROT_LOCAL selected: drive natively, blending slow/med/fast
-                # by magnitude exactly like TROT_FAST's own tiering, just
-                # selecting a gait_id to send instead of a local trajectory.
-                direction_id = DIRECTION_TO_ID.get(requested_direction)
+            if use_local_gaits:
+                # Local mode: drive every gait natively via GAIT_RUN instead
+                # of streaming raw positions. A gait with a tier chain
+                # (currently just TROT_FAST) blends slow/med/fast by
+                # magnitude exactly like the streaming path's own tiering;
+                # everything else maps 1:1 to its own gait_id.
+                resolved_direction = gait_manager.resolve_direction(requested_direction)
+                direction_id = DIRECTION_TO_ID.get(resolved_direction) if resolved_direction else None
                 if direction_id is not None:
-                    magnitude = input_handler.get_movement_magnitude()
-                    native_tier_index = GaitManager.resolve_tier_index(
-                        NATIVE_TIER_CHAIN, NATIVE_TIER_BOUNDARIES, native_tier_index, magnitude
-                    )
-                    gait_id = GAIT_NAME_TO_ID[NATIVE_TIER_CHAIN[native_tier_index]]
+                    tier_chain = GaitManager.SPEED_TIER_CHAINS.get(gait_manager.current_gait)
+                    if tier_chain:
+                        magnitude = input_handler.get_movement_magnitude()
+                        native_tier_index = GaitManager.resolve_tier_index(
+                            tier_chain, GaitManager.TIER_BOUNDARIES, native_tier_index, magnitude
+                        )
+                        gait_id = GAIT_NAME_TO_ID[tier_chain[native_tier_index]]
+                    else:
+                        gait_id = GAIT_NAME_TO_ID[gait_manager.current_gait]
 
                     now = time.time()
                     changed = (
@@ -256,6 +273,10 @@ while True:
                         native_direction_id = direction_id
                         native_gait_id = gait_id
                         native_last_sent_time = now
+                else:
+                    # Matches the streaming path's failure case exactly
+                    # (e.g. CRAWL/BOUND have no true 'l'/'r').
+                    movement = False
             else:
                 # Normal streaming path, unchanged - includes TROT_FAST's
                 # fast/med/slow tiering (still raw positions, no GAIT_RUN).
@@ -281,6 +302,18 @@ while True:
             gait_manager.stop()
             movement = False
     else:
+        # Static stance trim via the right stick - idle only (walking
+        # gaits own the leg positions once movement starts). Snaps back to
+        # the current gait's baseline (pos_x, pos_y) once the stick
+        # recenters, rather than adopting the trim as a new baseline.
+        stance_dx, stance_dy = input_handler.get_stance_offset(STANCE_TRIM_MAX_DX, STANCE_TRIM_MAX_DY)
+        if stance_dx or stance_dy:
+            move_xy(pos_x + stance_dx, pos_y + stance_dy, 0)
+            stance_trimmed = True
+        elif stance_trimmed:
+            move_xy(pos_x, pos_y, 300)
+            stance_trimmed = False
+
         # Check for movement input
         if input_handler.is_movement_input():
             movement = True
@@ -293,7 +326,28 @@ while True:
             log.info("Jump")
             q8.send_jump()
             time.sleep(5)
+            # Jump can brown out the robot MCU mid-sequence - if it reset,
+            # torque comes back up disabled, so re-send an explicit enable
+            # rather than assuming the pre-jump state still holds.
+            q8.enable_torque()
+            torqued_on = True
             move_xy(pos_x, pos_y, 500)
+        elif input_handler.is_action_pressed('toggle_torque'):
+            # Deliberately does not touch movement/gait_manager state - the
+            # ESPNow connection and pygame loop stay up, and movement/gait
+            # keep running exactly as before regardless of torque state,
+            # to check for interference (firmware ignores position writes
+            # while untorqued; TORQUE_SET is already idempotent/edge-detected
+            # on the robot side, see q8Dynamixel.cpp's _prevTorqueFlag check).
+            torqued_on = not torqued_on
+            if torqued_on:
+                log.info("Torque ON")
+                q8.enable_torque()
+                move_xy(pos_x, pos_y, 500)  # Return to current gait's idle stance
+            else:
+                log.info("Torque OFF")
+                q8.disable_torque()
+            time.sleep(0.2)
         elif input_handler.is_action_pressed('switch_gait'):
             # Cycle to next gait
             gait_names.append(gait_names.pop(0))
@@ -304,10 +358,11 @@ while True:
                 # Update position to match new gait
                 pos_x, pos_y = GAITS[new_gait][1], GAITS[new_gait][2]
                 move_xy(pos_x, pos_y, 500)
-                if new_gait == NATIVE_GAIT_SELECTOR:
-                    # Start fresh at the fastest tier, matching TROT_FAST's
-                    # own tiering convention on a fresh load_gait().
-                    native_tier_index = len(NATIVE_TIER_CHAIN) - 1
+                if new_gait in GaitManager.SPEED_TIER_CHAINS:
+                    # Start fresh at the fastest tier, matching the
+                    # streaming path's own tiering convention on a fresh
+                    # load_gait().
+                    native_tier_index = len(GaitManager.SPEED_TIER_CHAINS[new_gait]) - 1
                 log.info(f"Switched to {new_gait}")
             else:
                 log.error(f"Failed to load gait: {new_gait}")
@@ -330,6 +385,11 @@ while True:
             log.info("Greet")
             greet(q8)
             move_xy(pos_x, pos_y, 1000)  # Return to rest position
+            time.sleep(0.2)
+        elif input_handler.is_trigger_pressed('trigger_right'):
+            log.info("Shoot")
+            shoot(q8, joystick)
+            move_xy(pos_x, pos_y, 500)  # Return to rest position
             time.sleep(0.2)
         elif input_handler.is_action_pressed('exit'):
             break

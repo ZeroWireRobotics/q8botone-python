@@ -43,13 +43,17 @@ DIRECTION_ORDER = [
     'bl_0.75', 'bl_0.5', 'br_0.75', 'br_0.5',
 ]
 
-# gait_id -> GAITS name, for GAIT_RUN. Extend as more gaits get native tables.
-# Slow/med/fast mirror TROT_FAST's own SPEED_TIER_CHAINS ordering, so
-# TROT_LOCAL (see operate.py) can blend across the same 3 tiers natively.
+# gait_id -> GAITS name, for GAIT_RUN. Slow/med/fast mirror TROT_FAST's own
+# SPEED_TIER_CHAINS ordering, so native execution can blend across the same
+# 3 tiers on-robot (see GaitManager.SPEED_TIER_CHAINS, operate.py).
 GAIT_IDS = {
     0: 'TROT_SLOW',
     1: 'TROT_MED',
     2: 'TROT_FAST',
+    3: 'TROT_HIGH',
+    4: 'TROT_LOW',
+    5: 'CRAWL',
+    6: 'BOUND',
 }
 
 

@@ -60,8 +60,13 @@ def greet(q8):
     q8.move_all(G6, 500, False)
     time.sleep(0.7)
 
-def shoot(q8):
+def shoot(q8, joystick=None):
     q8.move_all(S1, 500, False)
     time.sleep(0.5)
+    if joystick:
+        try:
+            joystick.rumble(0.5, 0.5, 100)  # Quick buzz timed to the kick, not the trigger press
+        except Exception:
+            pass  # Rumble unsupported on this device - not fatal
     q8.move_all(S2, 200, False)
     time.sleep(0.5)

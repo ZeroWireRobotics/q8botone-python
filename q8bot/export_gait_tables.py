@@ -1,10 +1,14 @@
 '''
 Written by yufeng.wu0902@gmail.com
 
-Exports a gait's precomputed trajectory tables (all 12 direction variants)
-from gait_manager.py into a generated C++ header for the robot firmware,
-so that gait can run autonomously on-device via the GAIT_RUN command
-(see protocol.py) instead of being streamed frame-by-frame from the host.
+Exports every gait in protocol.py's GAIT_IDS into a generated C++ header for
+the robot firmware, so each gait can run autonomously on-device via the
+GAIT_RUN command (see protocol.py) instead of being streamed frame-by-frame
+from the host. All 12 canonical directions (protocol.py's DIRECTION_ORDER)
+are covered per gait, resolved via GaitManager.resolve_direction() - gaits
+that only generate a subset of directions natively (e.g. CRAWL/BOUND only
+produce 'f'/'b') get the rest filled in via GaitManager.FALLBACK_MAP, same
+as the host-streamed path, so behavior matches exactly either way.
 
 Re-run this whenever the exported gait's parameters in gait_manager.py's
 GAITS dict change, then rebuild/reflash q8bot_robot.
@@ -53,24 +57,36 @@ def export_gait(gait_id, gait_name):
 
     trajectories = gm.current_trajectories[gait_name]
 
-    missing = [d for d in DIRECTION_ORDER if d not in trajectories]
-    if missing:
-        raise RuntimeError(f"{gait_name} is missing direction(s): {missing}")
-
-    array_names = []
+    # One physical C array per unique underlying trajectory key actually
+    # present, not per canonical direction slot - gaits like CRAWL/BOUND
+    # only ever produce {'f','b'}, and every other canonical direction
+    # resolves to one of those two via GaitManager.FALLBACK_MAP, so
+    # generating a separate copy per canonical slot would just duplicate
+    # the same frame data many times over.
     frame_arrays = []
-    counts = []
-    for direction in DIRECTION_ORDER:
-        frames = trajectories[direction]
-        array_name = f"{gait_name}_{sanitize(direction)}"
-        array_names.append(array_name)
-        counts.append(len(frames))
+    array_by_key = {}
+    for key, frames in trajectories.items():
+        array_name = f"{gait_name}_{sanitize(key)}"
+        array_by_key[key] = (array_name, len(frames))
         frame_arrays.append(format_frame_array(array_name, frames))
 
+    # Build the 12-slot direction table using the exact same resolution
+    # (exact match, else FALLBACK_MAP chain) that operate.py's streaming
+    # and native paths use via GaitManager.resolve_direction(), so Local
+    # and Remote modes behave identically for every gait. A direction that
+    # resolves to nothing (e.g. CRAWL/BOUND's 'l'/'r') gets an explicit
+    # empty entry - GaitRunner::tick() already no-ops on count==0.
+    entries = []
+    for direction in DIRECTION_ORDER:
+        resolved = gm.resolve_direction(direction)
+        if resolved is None:
+            entries.append("  {nullptr, 0}")
+        else:
+            array_name, count = array_by_key[resolved]
+            entries.append(f"  {{{array_name}, {count}}}")
+
     directions_table_name = f"{gait_name}_DIRECTIONS"
-    directions_entries = ",\n".join(
-        f"  {{{name}, {count}}}" for name, count in zip(array_names, counts)
-    )
+    directions_entries = ",\n".join(entries)
 
     return frame_arrays, directions_table_name, directions_entries
 
