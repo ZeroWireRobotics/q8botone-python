@@ -28,6 +28,11 @@ class q8_espnow:
         # Initialize serial communication with ESP32-C3
         self.serialHandler = serial.Serial(self.DEVICENAME, self.BAUDRATE)
 
+        # Tell the controller a host is now driving it, so it switches out
+        # of independent (gamepad) mode into relay mode - controller-local,
+        # never forwarded to the robot (see CmdType.HOST_CONNECTED).
+        self.serialHandler.write(build_frame(CmdType.HOST_CONNECTED, b""))
+
     def enable_torque(self):
         self.serialHandler.write(build_frame(CmdType.TORQUE_SET, bytes([1])))
         self.torque_on = True
@@ -51,6 +56,16 @@ class q8_espnow:
 
     def send_jump(self):
         self.serialHandler.write(build_frame(CmdType.JUMP, b""))
+        return True
+
+    def send_greet(self):
+        """
+        Trigger the robot's own native greet() sequence (see q8Dynamixel.cpp)
+        instead of routine_generator.py's host-streamed via-point version -
+        mainly useful for testing the robot-side CmdType.GREET handler
+        through the relay path.
+        """
+        self.serialHandler.write(build_frame(CmdType.GREET, b""))
         return True
 
     def run_gait(self, gait_id, direction_id):
