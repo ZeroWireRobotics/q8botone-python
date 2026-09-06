@@ -82,6 +82,17 @@ class q8_espnow:
         self.serialHandler.write(build_frame(CmdType.GAIT_STOP, b""))
         return True
 
+    def set_led_brightness(self, brightness):
+        """
+        Set (and have the robot persist to NVS) its RGB LED brightness.
+
+        Args:
+            brightness: int, 0-255, clamped
+        """
+        brightness = max(0, min(255, int(brightness)))
+        self.serialHandler.write(build_frame(CmdType.LED_BRIGHTNESS, bytes([brightness])))
+        return True
+
     def read_reply(self, timeout=None):
         """
         Read one reply frame (e.g. a pending battery/recorded-data response).

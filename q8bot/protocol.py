@@ -30,6 +30,7 @@ class CmdType(IntEnum):
     HOST_CONNECTED = 0x09  # no payload - controller-local only, never forwarded to the robot;
                             # tells q8bot_controller to switch from independent (gamepad) mode
                             # to relay mode
+    LED_BRIGHTNESS = 0x0A  # {brightness: uint8, 0-255} - sets & persists the robot's RGB LED brightness
 
 
 class ReplyType(IntEnum):

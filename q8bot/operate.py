@@ -65,6 +65,22 @@ NATIVE_GAIT_RESEND_INTERVAL = 0.25  # seconds
 STANCE_TRIM_MAX_DX = 25.0
 STANCE_TRIM_MAX_DY = 15.0
 
+# Keyboard brightness cycle ('l' key, see control_config.py's
+# 'brightness_cycle'). Not wired up for joystick/gamepad yet. Steps are
+# perceptual percentages of LED_BRIGHTNESS_CAP ("full"), gamma-corrected
+# (2.8, matching Adafruit_NeoPixel's own gamma32() table already used for
+# hue colors in RGBManager::setHue) so each step reads as an even brightness
+# drop to the eye instead of a raw linear one - low raw PWM values look
+# disproportionately bright, so a "half as bright" step needs a much smaller
+# raw value than half.
+LED_BRIGHTNESS_GAMMA = 2.8
+LED_BRIGHTNESS_CAP = 128  # "full" for this cycle - matches the robot's own power-on default
+LED_BRIGHTNESS_PERCENTS = (100, 75, 50, 25)
+LED_BRIGHTNESS_LEVELS = [
+    round(LED_BRIGHTNESS_CAP * (pct / 100) ** LED_BRIGHTNESS_GAMMA)
+    for pct in LED_BRIGHTNESS_PERCENTS
+]
+
 # Helper Functions
 def move_xy(x, y, dur = 0, deg = True):
     """Move robot legs to specific x,y position."""
@@ -93,6 +109,10 @@ native_tier_index = 0  # Corrected below once the default gait is loaded
 native_last_sent_time = 0.0  # For the low-rate keep-alive resend
 torqued_on = True  # Toggled by the 'toggle_torque' action; movement/gait keep running either way
 stance_trimmed = False  # Is a static stance trim (right stick) currently applied?
+# Index into LED_BRIGHTNESS_LEVELS, advanced by the 'brightness_cycle'
+# action ('l' key) - always starts at 100% (index 0) regardless of the
+# robot's actual persisted brightness, since we never read that back.
+led_brightness_index = 0
 
 # Start pygame instance
 pygame.init()
@@ -390,6 +410,13 @@ while True:
             log.info("Shoot")
             shoot(q8, joystick)
             move_xy(pos_x, pos_y, 500)  # Return to rest position
+            time.sleep(0.2)
+        elif input_handler.is_action_pressed('brightness_cycle'):
+            led_brightness_index = (led_brightness_index + 1) % len(LED_BRIGHTNESS_LEVELS)
+            brightness = LED_BRIGHTNESS_LEVELS[led_brightness_index]
+            percent = LED_BRIGHTNESS_PERCENTS[led_brightness_index]
+            log.info(f"LED brightness: {percent}% (raw {brightness})")
+            q8.set_led_brightness(brightness)
             time.sleep(0.2)
         elif input_handler.is_action_pressed('exit'):
             break
