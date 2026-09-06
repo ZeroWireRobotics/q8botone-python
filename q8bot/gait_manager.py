@@ -30,6 +30,13 @@ GAITS = {
     'TROT_MED':  ['trot', 9.75, 43.36, 40, 20, 0, 15, 30],
     'TROT_HIGH': ['trot', 9.75, 60, 20, 10, 0, 15, 30],
     'TROT_LOW':  ['trot', 9.75, 25, 20, 10, 0, 15, 30],
+    # Trot in place: same stacktype as the other trots but xrange=0, so legs
+    # lift/lower with no horizontal stride at all - direction is irrelevant
+    # (f/b/l/r all collapse to the same motion). Not in the normal
+    # switch_gait rotation (see operate.py's _internal_only_gaits) - driven
+    # directly by the LT trigger via its own dedicated GaitManager instance.
+    # yrange/s1/s2 match TROT_MED's "moderate" feel as a starting point.
+    'TROT_INPLACE': ['trot', 9.75, 43.36, 0, 30, 0, 15, 30],
     'CRAWL':     ['crawl', 9.75, 40, 10, 20, 0, 50, 25],
     'BOUND':     ['bound', 9.75, 33.36, 40, 0, 20, 50, 10],
     # 'PRONK':     ['pronk', 9.75, 33.36, 40, 0, 20, 60, 10],

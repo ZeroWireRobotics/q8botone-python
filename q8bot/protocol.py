@@ -59,6 +59,7 @@ GAIT_IDS = {
     4: 'TROT_LOW',
     5: 'CRAWL',
     6: 'BOUND',
+    7: 'TROT_INPLACE',
 }
 
 

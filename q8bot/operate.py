@@ -114,6 +114,31 @@ stance_trimmed = False  # Is a static stance trim (right stick) currently applie
 # robot's actual persisted brightness, since we never read that back.
 led_brightness_index = 0
 
+
+def send_native_gait_if_needed(gait_id, direction_id):
+    """
+    Send GAIT_RUN for (gait_id, direction_id) if it differs from what the
+    robot is currently running, or the low-rate keep-alive resend is due.
+    Updates the native_* globals. Shared by stick-driven native gaits and
+    the LT trot-in-place trigger - the robot only ever runs one GAIT_RUN at
+    a time, so both paths drive the same state.
+    """
+    global native_gait_active, native_direction_id, native_gait_id, native_last_sent_time
+    now = time.time()
+    changed = (
+        not native_gait_active
+        or direction_id != native_direction_id
+        or gait_id != native_gait_id
+    )
+    resend_due = now - native_last_sent_time >= NATIVE_GAIT_RESEND_INTERVAL
+    if changed or resend_due:
+        q8.run_gait(gait_id, direction_id)
+        native_gait_active = True
+        native_direction_id = direction_id
+        native_gait_id = gait_id
+        native_last_sent_time = now
+
+
 # Start pygame instance
 pygame.init()
 window = pygame.display.set_mode((1280, 720), pygame.RESIZABLE)
@@ -208,8 +233,21 @@ q8.enable_torque()
 # in their own right. Each chain's last entry is the gait itself, which
 # stays selectable as normal.
 _tier_companions = {name for chain in GaitManager.SPEED_TIER_CHAINS.values() for name in chain[:-1]}
-gait_names = [name for name in GAITS.keys() if name not in _tier_companions]
+# Driven directly by the LT trigger (see below), not switch_gait-selectable.
+_internal_only_gaits = {'TROT_INPLACE'}
+gait_names = [name for name in GAITS.keys() if name not in _tier_companions and name not in _internal_only_gaits]
 gait_manager = GaitManager(leg, GAITS)
+
+# Trot-in-place: in local mode, driven via GAIT_RUN like any other native
+# gait (see protocol.py's GAIT_IDS and firmware/q8bot_robot/include/
+# gaitTables.h - re-exported below). In remote mode there's no firmware
+# table to run, so it's streamed directly instead, same as the pre-native-
+# gait path - a dedicated GaitManager instance keeps its phase/state fully
+# separate from whichever gait is currently selected for stick movement.
+inplace_gait_manager = GaitManager(leg, GAITS)
+if not inplace_gait_manager.load_gait('TROT_INPLACE'):
+    log.error("Failed to load TROT_INPLACE gait")
+trotting_in_place = False  # Is LT currently held and driving trot-in-place?
 
 # Starting location of leg end effector in x and y
 first_gait_params = GAITS[gait_names[0]]
@@ -280,19 +318,7 @@ while True:
                     else:
                         gait_id = GAIT_NAME_TO_ID[gait_manager.current_gait]
 
-                    now = time.time()
-                    changed = (
-                        not native_gait_active
-                        or direction_id != native_direction_id
-                        or gait_id != native_gait_id
-                    )
-                    resend_due = now - native_last_sent_time >= NATIVE_GAIT_RESEND_INTERVAL
-                    if changed or resend_due:
-                        q8.run_gait(gait_id, direction_id)
-                        native_gait_active = True
-                        native_direction_id = direction_id
-                        native_gait_id = gait_id
-                        native_last_sent_time = now
+                    send_native_gait_if_needed(gait_id, direction_id)
                 else:
                     # Matches the streaming path's failure case exactly
                     # (e.g. CRAWL/BOUND have no true 'l'/'r').
@@ -321,7 +347,34 @@ while True:
             record = False
             gait_manager.stop()
             movement = False
+    elif input_handler.is_trigger_pressed('trigger_left'):
+        # Trot in place while LT is held.
+        if use_local_gaits:
+            # Native GAIT_RUN, same as any other local gait - direction is
+            # arbitrary since TROT_INPLACE's xrange=0 makes every direction
+            # identical (see gait_manager.py).
+            send_native_gait_if_needed(GAIT_NAME_TO_ID['TROT_INPLACE'], DIRECTION_TO_ID['f'])
+        else:
+            # Remote mode: streamed every tick via the dedicated
+            # inplace_gait_manager (see setup above).
+            if not trotting_in_place:
+                inplace_gait_manager.start_movement('f')
+            pos = inplace_gait_manager.tick()
+            if pos:
+                q8.move_all(pos, 0, False)
+        trotting_in_place = True
     else:
+        if trotting_in_place:
+            if use_local_gaits:
+                q8.stop_gait()
+                native_gait_active = False
+                native_direction_id = None
+                native_gait_id = None
+            else:
+                inplace_gait_manager.stop()
+                move_xy(pos_x, pos_y, 0)
+            trotting_in_place = False
+
         # Static stance trim via the right stick - idle only (walking
         # gaits own the leg positions once movement starts). Snaps back to
         # the current gait's baseline (pos_x, pos_y) once the stick

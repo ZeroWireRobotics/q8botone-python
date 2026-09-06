@@ -94,11 +94,13 @@ JOYSTICK_CONFIG = {
                 # stick and constantly displace the stance.
                 "stance_horizontal": 2,
                 "stance_vertical": 3,
-                # RT - analog trigger axis (idles -1.0, +1.0 fully pressed),
-                # verified live (rt_probe.py). Used for 'shoot' via
+                # RT/LT - analog trigger axes (idle -1.0, +1.0 fully
+                # pressed), verified live (rt_probe.py). Used via
                 # InputHandler.is_trigger_pressed(), not is_action_pressed()
-                # (which only handles discrete buttons).
-                "trigger_right": 5
+                # (which only handles discrete buttons). RT drives 'shoot';
+                # LT drives trot-in-place (see operate.py).
+                "trigger_right": 5,
+                "trigger_left": 4
             },
             "buttons": {
                 "top": 3,
