@@ -5,8 +5,6 @@ Python class for FK/IK calculations on Q8bot.
 '''
 
 import math
-import numpy as np
-from scipy.optimize import fsolve
 
 # d - distance between motors; l1/l1p - upper linkage length; l2/l2p - lower linkage length
 # Unit is in mm.
@@ -40,7 +38,7 @@ class k_solver:
             if deg:
                 q1, q2 = q1*180/math.pi, q2*180/math.pi
             self.prev_ik = [q1, q2]
-            return np.round(q1, rounding), np.round(q2, rounding), True
+            return round(q1, rounding), round(q2, rounding), True
         except:
             return self.prev_ik[0], self.prev_ik[1], False
     
@@ -50,6 +48,11 @@ class k_solver:
     
     # Solve inverse kinematics at an given end effector position
     def fk_solve(self, q1, q2, deg = True, rounding = 3):
+        # scipy is imported here rather than at module scope so it stays an
+        # optional dependency - this is the only thing in the library that
+        # needs it, and nothing on the control path calls it.
+        from scipy.optimize import fsolve
+
         if deg:
             angles = (self._deg2rad(q1), self._deg2rad(q2))
         x, y = fsolve(self._fk_calc, [10,60], args=angles)

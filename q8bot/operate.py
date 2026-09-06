@@ -30,10 +30,10 @@ from routine_generator import show_range, greet, shoot
 from input_handler import (
     InputHandler,
     list_available_joysticks,
-    prompt_controller_selection,
-    prompt_bot_selection,
     init_selected_joystick,
 )
+from startup_dialogs import prompt_controller_selection, prompt_bot_selection
+from log_overlay import PygameLogOverlay
 
 # Q8bot leg configuration
 CENTER_DIST = 19.5  # Distance between two actuators
@@ -144,8 +144,10 @@ pygame.init()
 window = pygame.display.set_mode((1280, 720), pygame.RESIZABLE)
 clock = pygame.time.Clock()
 
-# Set up pygame surface for logger
-Q8Logger.set_pygame_surface(window)
+# Mirror log messages onto the control window (see log_overlay.py). The
+# surface is passed in at render time, so a window resize needs no fixup.
+log_overlay = PygameLogOverlay()
+Q8Logger.add_handler(log_overlay)
 
 # Resolve COM port and input device
 available_joysticks = list_available_joysticks()
@@ -280,7 +282,6 @@ while True:
     for event in frame_events:
         if event.type == pygame.VIDEORESIZE:
             window = pygame.display.set_mode((event.w, event.h), pygame.RESIZABLE)
-            Q8Logger.set_pygame_surface(window)
 
     # Clear screen and render logger messages
     window.fill((0, 0, 0))  # Black background
@@ -291,7 +292,7 @@ while True:
         image_x = (window.get_width() - current_image.get_width()) // 2
         window.blit(current_image, (image_x, IMAGE_TOP_OFFSET))
 
-    Q8Logger.render_pygame_messages()  # Draw logger on top
+    log_overlay.render(window)  # Draw logger on top
     pygame.display.flip()
 
     if movement:

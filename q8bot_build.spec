@@ -20,9 +20,6 @@ a = Analysis(
         ('docs/Instruction_Joystick.jpg', 'docs'),
     ],
     hiddenimports=[
-        'numpy',
-        'scipy',
-        'scipy.optimize',
         'pygame',
         'serial',
         'serial.tools',

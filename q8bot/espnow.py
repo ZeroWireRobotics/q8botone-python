@@ -21,8 +21,6 @@ class q8_espnow:
         self.DEVICENAME = port
         self.BAUDRATE = baud
         self.JOINTS = joint_list
-        self.prev_pos = [90 for i in range(8)]
-        self.prev_profile = 0
         self.torque_on = False
 
         # Initialize serial communication with ESP32-C3
@@ -126,39 +124,3 @@ class q8_espnow:
             mirrored_pos.append(joint_pos[0])
             mirrored_pos.append(joint_pos[1])
         return self.move_all(mirrored_pos, dur, False)
-    
-    def bulkread(self, addr, len = 4):
-        value = [0 for i in range(8)]
-        return value, True
-    
-    def joint_read4(self, joint, addr):
-        value = 10
-        return value
-    
-    def joint_read2(self, joint, addr):
-        value = 10
-        return value
-
-    def check_voltage(self):
-        voltage = 3.7
-        return voltage
-
-    def dxl2deg(self, angle_dxl):
-        # Dynamixel joint 0 to 360 deg is 0 to 4096
-        friendly_per_dxl = 360.0 / 4096.0 / self.GEAR_RATIO
-        angle_friendly = (angle_dxl - self.ZERO_OFFSET) * friendly_per_dxl
-        return angle_friendly
-
-    def deg2dxl(self, angle_friendly):
-        # Dynamixel joint 0 to 360 deg is 0 to 4096
-        friendly_per_dxl = 360.0 / 4096.0 / self.GEAR_RATIO
-        angle_dxl = int(angle_friendly / friendly_per_dxl + 0.5) + \
-                    self.ZERO_OFFSET
-        return angle_dxl
-    
-    #-------------------#
-    # Private Functions #
-    #-------------------#
-    
-    def _set_profile(self, dur_ms):
-        return
