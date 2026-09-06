@@ -21,6 +21,15 @@ import time
 import pygame
 import sys
 import argparse
+
+if __package__ in (None, ''):
+    # Running as a loose script (`python operate.py`, or an editor's "run
+    # this file") rather than `python -m q8bot.operate`. The relative
+    # imports below need a package to resolve against, so put python-tools
+    # on the path and adopt the package name.
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    __package__ = 'q8bot'
+
 from .espnow import q8_espnow
 from .helpers import XiaoPortFinder, Q8Logger
 from .robot import Q8Bot
