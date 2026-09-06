@@ -7,54 +7,101 @@ then sends commands wirelessly to the robot via ESPNow.
 
 Wire format: see protocol.py - a binary framed protocol
 ([start][msg type][length][payload][CRC-16]), not raw ASCII.
+
+Safe to use from more than one thread: every serial access goes through one
+lock, so Q8Bot's background tick thread (see robot.py) can stream frames
+while the caller's thread issues commands.
 '''
 
 import struct
+import threading
+
 import serial
 
-from protocol import CmdType, ReplyType, build_frame, read_frame
+from .protocol import CmdType, ReplyType, build_frame, read_frame
 
 DEFAULT_JOINTLIST = [i + 11 for i in range(8)]
 
+# Without a read timeout, pyserial blocks forever mid-frame if only part of a
+# reply has arrived - which would hold the lock and stall the sender. Short
+# enough not to stall, long enough for the rest of a frame already in flight;
+# read_frame() returns None on a partial read and the caller retries.
+DEFAULT_READ_TIMEOUT = 0.05
+
+
 class q8_espnow:
-    def __init__(self, port, joint_list = DEFAULT_JOINTLIST, baud = 115200):
+    def __init__(self, port, joint_list = DEFAULT_JOINTLIST, baud = 115200,
+                 read_timeout = DEFAULT_READ_TIMEOUT):
         self.DEVICENAME = port
         self.BAUDRATE = baud
         self.JOINTS = joint_list
         self.torque_on = False
 
+        # Guards the serial port. Reentrant so a method built out of other
+        # public methods (e.g. move_mirror -> move_all) doesn't deadlock.
+        self._lock = threading.RLock()
+
         # Initialize serial communication with ESP32-C3
-        self.serialHandler = serial.Serial(self.DEVICENAME, self.BAUDRATE)
+        self.serialHandler = serial.Serial(self.DEVICENAME, self.BAUDRATE,
+                                           timeout=read_timeout)
 
         # Tell the controller a host is now driving it, so it switches out
         # of independent (gamepad) mode into relay mode - controller-local,
         # never forwarded to the robot (see CmdType.HOST_CONNECTED).
-        self.serialHandler.write(build_frame(CmdType.HOST_CONNECTED, b""))
+        self._send(CmdType.HOST_CONNECTED)
+
+    #-------------------#
+    # Connection        #
+    #-------------------#
+
+    @property
+    def is_open(self):
+        return self.serialHandler.is_open
+
+    def close(self):
+        """
+        Close the serial port. Sends nothing first - stopping the robot (and
+        dropping torque, if that's wanted) is the caller's decision; see
+        Q8Bot.close() for the policy version.
+
+        Safe to call more than once.
+        """
+        with self._lock:
+            if self.serialHandler.is_open:
+                self.serialHandler.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
+
+    #-------------------#
+    # Commands          #
+    #-------------------#
 
     def enable_torque(self):
-        self.serialHandler.write(build_frame(CmdType.TORQUE_SET, bytes([1])))
+        self._send(CmdType.TORQUE_SET, bytes([1]))
         self.torque_on = True
         return True
 
     def disable_torque(self):
-        self.serialHandler.write(build_frame(CmdType.TORQUE_SET, bytes([0])))
+        self._send(CmdType.TORQUE_SET, bytes([0]))
         self.torque_on = False
         return True
 
     def check_battery(self):
-        self.serialHandler.write(build_frame(CmdType.BATTERY_REQUEST, b""))
-        return True
+        return self._send(CmdType.BATTERY_REQUEST)
 
     def record_data(self):
         return self.move_all([0] * 8, 0, True)
 
     def finish_recording(self):
-        self.serialHandler.write(build_frame(CmdType.RECORD_SEND, b""))
-        return True
+        return self._send(CmdType.RECORD_SEND)
 
     def send_jump(self):
-        self.serialHandler.write(build_frame(CmdType.JUMP, b""))
-        return True
+        return self._send(CmdType.JUMP)
 
     def send_greet(self):
         """
@@ -63,8 +110,7 @@ class q8_espnow:
         mainly useful for testing the robot-side CmdType.GREET handler
         through the relay path.
         """
-        self.serialHandler.write(build_frame(CmdType.GREET, b""))
-        return True
+        return self._send(CmdType.GREET)
 
     def run_gait(self, gait_id, direction_id):
         """
@@ -73,12 +119,10 @@ class q8_espnow:
         MOVE frames. A raw move_all()/move_mirror() call always stops this
         first on the robot side - no need to call stop_gait() before them.
         """
-        self.serialHandler.write(build_frame(CmdType.GAIT_RUN, bytes([gait_id, direction_id])))
-        return True
+        return self._send(CmdType.GAIT_RUN, bytes([gait_id, direction_id]))
 
     def stop_gait(self):
-        self.serialHandler.write(build_frame(CmdType.GAIT_STOP, b""))
-        return True
+        return self._send(CmdType.GAIT_STOP)
 
     def set_led_brightness(self, brightness):
         """
@@ -88,34 +132,16 @@ class q8_espnow:
             brightness: int, 0-255, clamped
         """
         brightness = max(0, min(255, int(brightness)))
-        self.serialHandler.write(build_frame(CmdType.LED_BRIGHTNESS, bytes([brightness])))
-        return True
-
-    def read_reply(self, timeout=None):
-        """
-        Read one reply frame (e.g. a pending battery/recorded-data response).
-
-        Returns:
-            (ReplyType, payload_bytes) or None if nothing valid was read.
-        """
-        result = read_frame(self.serialHandler, timeout)
-        if result is None:
-            return None
-        msg_type, payload = result
-        try:
-            return ReplyType(msg_type), payload
-        except ValueError:
-            return None
+        return self._send(CmdType.LED_BRIGHTNESS, bytes([brightness]))
 
     def move_all(self, joints_pos, dur = 0, record = True):
         # Expects 8 positions in deg. For example: [0, 90, 0, 90, 0, 90, 0, 90]
         try:
             angles_tenths = [round(a * 10) for a in joints_pos]
             payload = struct.pack('<8hHB', *angles_tenths, dur, int(record))
-            self.serialHandler.write(build_frame(CmdType.MOVE, payload))
         except Exception:
             return False
-        return True
+        return self._send(CmdType.MOVE, payload)
 
     def move_mirror(self, joint_pos, dur = 0):
         # Expects a pair of pos for one leg, which will be mirrored 4times.
@@ -124,3 +150,47 @@ class q8_espnow:
             mirrored_pos.append(joint_pos[0])
             mirrored_pos.append(joint_pos[1])
         return self.move_all(mirrored_pos, dur, False)
+
+    #-------------------#
+    # Replies           #
+    #-------------------#
+
+    @property
+    def bytes_waiting(self):
+        """Bytes available to read - 0 if the port is closed."""
+        with self._lock:
+            if not self.serialHandler.is_open:
+                return 0
+            return self.serialHandler.in_waiting
+
+    def read_reply(self):
+        """
+        Read one reply frame (e.g. a pending battery/recorded-data response).
+
+        Returns:
+            (ReplyType, payload_bytes) or None if nothing valid was read.
+        """
+        with self._lock:
+            if not self.serialHandler.is_open:
+                return None
+            result = read_frame(self.serialHandler)
+
+        if result is None:
+            return None
+        msg_type, payload = result
+        try:
+            return ReplyType(msg_type), payload
+        except ValueError:
+            return None
+
+    #-------------------#
+    # Private Functions #
+    #-------------------#
+
+    def _send(self, cmd, payload = b""):
+        """Frame and write one command. False if the port is closed."""
+        with self._lock:
+            if not self.serialHandler.is_open:
+                return False
+            self.serialHandler.write(build_frame(cmd, payload))
+        return True

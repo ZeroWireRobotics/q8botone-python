@@ -6,7 +6,7 @@ Abstracts keyboard and joystick input into a common interface.
 '''
 
 import pygame
-from control_config import (
+from .control_config import (
     KEYBOARD_MAPPING,
     check_joystick_compatible,
     get_joystick_mapping,
@@ -14,7 +14,7 @@ from control_config import (
     get_joystick_direction,
     get_joystick_magnitude
 )
-from helpers import Q8Logger
+from .helpers import Q8Logger
 
 
 class InputHandler:

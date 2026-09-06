@@ -62,6 +62,11 @@ GAIT_IDS = {
     7: 'TROT_INPLACE',
 }
 
+# Reverse lookups, for turning a resolved direction/gait name into the two
+# bytes a GAIT_RUN payload wants.
+DIRECTION_TO_ID = {name: i for i, name in enumerate(DIRECTION_ORDER)}
+GAIT_NAME_TO_ID = {name: gait_id for gait_id, name in GAIT_IDS.items()}
+
 
 def crc16_arc(data: bytes, crc: int = 0x0000) -> int:
     """CRC-16/ARC over the given bytes."""

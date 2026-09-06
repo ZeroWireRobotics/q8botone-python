@@ -1,0 +1,521 @@
+'''
+Written by yufeng.wu0902@gmail.com
+
+Q8Bot - one object that owns the link, the gait catalog, and the movement
+state machine, so every front end drives the robot the same way: operate.py's
+pygame app, a desktop GUI, or a plain script.
+
+    from robot import Q8Bot
+
+    with Q8Bot.connect() as bot:
+        bot.set_torque(True)
+        bot.stand(1000)
+        bot.move('f')          # keeps trotting - returns immediately
+        time.sleep(3)
+        bot.idle()
+
+Movement continues until told otherwise, and it does so identically in both
+execution modes. A background thread ticks at TICK_HZ: in local mode the
+robot runs the gait off its own flashed tables and the thread only refreshes
+the command periodically, while in remote mode that same thread streams one
+frame per tick. Callers never have to know which mode they're in - that's
+the whole reason the thread exists.
+
+Commands are safe to call from any thread. The scripted routines (jump,
+greet, show_range, shoot) block for as long as the routine takes.
+'''
+
+import threading
+import time
+from enum import Enum
+
+from . import routine_generator
+from .espnow import q8_espnow
+from .gait_manager import GAITS, GaitManager
+from .helpers import XiaoPortFinder
+from .kinematics_solver import k_solver
+from .protocol import DIRECTION_TO_ID, GAIT_NAME_TO_ID, ReplyType
+
+# Q8bot leg configuration
+CENTER_DIST = 19.5  # Distance between two actuators
+L1 = 25             # Upper leg length
+L2 = 40             # Lower leg length
+
+# How often the background thread runs. Matches operate.py's original loop
+# rate, which is what the streamed trajectories were tuned against.
+TICK_HZ = 200
+
+# Local-mode keep-alive: bounds how long a single dropped GAIT_RUN frame can
+# leave host and robot out of sync (there's no ACK/retry). The robot itself
+# needs nothing - GaitRunner keeps playing until GAIT_STOP - so this is
+# purely insurance, and cheap compared to falling back to streaming.
+NATIVE_GAIT_RESEND_INTERVAL = 0.25  # seconds
+
+# Driven by trot_in_place(), never part of the switch-gait rotation.
+INPLACE_GAIT = 'TROT_INPLACE'
+INTERNAL_ONLY_GAITS = {INPLACE_GAIT}
+
+# Bound per tick so a chatty robot can't stall the loop.
+MAX_REPLIES_PER_TICK = 8
+
+# Streaming advances the trajectory by elapsed time, not by one frame per
+# wakeup, so gait speed doesn't depend on how precisely the host can sleep -
+# Windows' timer granularity alone makes a 5ms sleep land nearer 8ms, which
+# would otherwise run every streamed gait ~30% slow. When a wakeup covers
+# more than one frame the skipped ones are dropped rather than sent late;
+# this caps how far a single wakeup may jump, so a long stall (a blocking
+# routine, a busy GUI) resumes smoothly instead of flinging the legs.
+MAX_STREAM_CATCHUP = 4
+
+
+class Mode(Enum):
+    """What the robot is currently being told to do."""
+    IDLE = 'idle'
+    NATIVE = 'native'   # robot is running a gait from its own tables
+    STREAM = 'stream'   # host is sending one frame per tick
+
+
+def selectable_gaits(gaits=GAITS):
+    """
+    The gaits worth offering a user - i.e. what a GUI dropdown or
+    next_gait() should cycle through.
+
+    Excludes the non-fastest speed-tier companions (TROT_SLOW/TROT_MED are
+    blended in automatically by magnitude, see GaitManager.SPEED_TIER_CHAINS)
+    and anything driven by its own dedicated control, like TROT_INPLACE.
+    """
+    companions = {name for chain in GaitManager.SPEED_TIER_CHAINS.values()
+                  for name in chain[:-1]}
+    return [name for name in gaits
+            if name not in companions and name not in INTERNAL_ONLY_GAITS]
+
+
+class Q8Bot:
+    def __init__(self, link, use_local_gaits=True, gaits=GAITS, leg=None,
+                 tick_hz=TICK_HZ):
+        """
+        Args:
+            link: a q8_espnow (or anything with the same command surface)
+            use_local_gaits: True to run gaits from the robot's flashed
+                tables via GAIT_RUN, False to stream every frame from here
+            gaits: gait catalog, defaults to gait_manager.GAITS
+            leg: kinematics solver, defaults to Q8bot's own geometry
+            tick_hz: background thread rate
+        """
+        self.link = link
+        self.use_local_gaits = use_local_gaits
+        self.gaits = gaits
+        self.leg = leg if leg is not None else k_solver(CENTER_DIST, L1, L2, L1, L2)
+
+        # Guards every field below. Reentrant because the higher-level
+        # commands are built out of the lower-level ones (idle -> stand).
+        self._lock = threading.RLock()
+
+        self._mode = Mode.IDLE
+        self._stream_manager = None   # which GaitManager the tick pulls from
+        self._native_cmd = None       # (gait_id, direction_id) in flight
+        self._native_last_sent = 0.0
+        self._native_tier_index = 0
+        self._recording = False
+        self._trimmed = False
+        self._stream_due = 0.0        # monotonic time the next frame is due
+        self._battery_pct = None
+        self._battery_fresh = False
+        self._pos_x = 0.0
+        self._pos_y = 0.0
+
+        # Separate managers so trot_in_place() never disturbs the phase or
+        # tier state of whichever gait the sticks are driving.
+        self._gait_manager = GaitManager(self.leg, gaits)
+        self._inplace_manager = GaitManager(self.leg, gaits)
+
+        self.selectable = selectable_gaits(gaits)
+        if not self._load_gait(self.selectable[0]):
+            raise RuntimeError(f"Failed to generate trajectories for {self.selectable[0]}")
+        if not self._inplace_manager.load_gait(INPLACE_GAIT):
+            raise RuntimeError(f"Failed to generate trajectories for {INPLACE_GAIT}")
+
+        self._tick_period = 1.0 / tick_hz
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._run, name='q8bot-tick', daemon=True)
+        self._thread.start()
+
+    @classmethod
+    def connect(cls, port=None, **kwargs):
+        """
+        Open a link to the first (or given) ESP32C3 controller and wrap it.
+
+        Moves nothing and leaves torque alone - call set_torque()/stand()
+        when you actually want the robot to do something.
+        """
+        if port is None:
+            port = XiaoPortFinder.find()
+            if port is None:
+                raise RuntimeError("No ESP32C3 controller found - is it plugged in?")
+        return cls(q8_espnow(port), **kwargs)
+
+    #-------------------#
+    # State             #
+    #-------------------#
+
+    @property
+    def mode(self):
+        return self._mode
+
+    @property
+    def gait(self):
+        """Name of the gait the sticks/move() are currently driving."""
+        return self._gait_manager.current_gait
+
+    @property
+    def stance(self):
+        """(x, y) mm baseline the current gait rests at."""
+        return self._pos_x, self._pos_y
+
+    @property
+    def torque(self):
+        return self.link.torque_on
+
+    @property
+    def recording(self):
+        return self._recording
+
+    #-------------------#
+    # Movement          #
+    #-------------------#
+
+    def move(self, direction, magnitude=1.0):
+        """
+        Walk in `direction` (see protocol.DIRECTION_ORDER) until told
+        otherwise. Returns immediately; the background thread keeps it going.
+
+        Safe to call every frame with live stick values - re-issuing the same
+        direction is a no-op, and a changed one carries the gait phase over.
+
+        Args:
+            direction: e.g. 'f', 'b', 'l', 'fl_0.75'
+            magnitude: 0.0-1.0 stick push, picks the speed tier for gaits
+                that have one (see GaitManager.SPEED_TIER_CHAINS)
+
+        Returns:
+            bool: False if the current gait has no such direction (e.g.
+                CRAWL has no true 'l'/'r'), leaving the robot as it was.
+        """
+        with self._lock:
+            if self.use_local_gaits:
+                resolved = self._gait_manager.resolve_direction(direction)
+                if resolved is None:
+                    return False
+                self._start_native(self._tiered_gait_id(magnitude),
+                                   DIRECTION_TO_ID[resolved])
+            else:
+                self._gait_manager.update_speed_tier(magnitude)
+                if not self._gait_manager.start_movement(direction):
+                    return False
+                self._start_stream(self._gait_manager)
+            return True
+
+    def trot_in_place(self):
+        """
+        Trot without going anywhere (TROT_INPLACE - a trot with zero stride,
+        so direction is irrelevant). Runs until idle(), like move().
+        """
+        with self._lock:
+            if self.use_local_gaits:
+                self._start_native(GAIT_NAME_TO_ID[INPLACE_GAIT], DIRECTION_TO_ID['f'])
+            else:
+                if self._stream_manager is not self._inplace_manager:
+                    self._inplace_manager.start_movement('f')
+                self._start_stream(self._inplace_manager)
+            return True
+
+    def idle(self):
+        """
+        Stop whatever gait is running and settle onto the current stance.
+
+        A no-op if already idle, so a polling front end can call it every
+        frame without re-sending anything.
+        """
+        with self._lock:
+            if self._mode is Mode.IDLE:
+                return
+            if self._mode is Mode.NATIVE:
+                self.link.stop_gait()
+            elif self._stream_manager is not None:
+                self._stream_manager.stop()
+
+            self._native_cmd = None
+            self._stream_manager = None
+            self._mode = Mode.IDLE
+
+            self.stand()
+            # Unconditional, matching the behaviour this replaced. Worth
+            # making conditional on self._recording at some point - the robot
+            # acts on RECORD_SEND whether or not anything was recorded.
+            self.link.finish_recording()
+            self._recording = False
+
+    def stand(self, dur=0):
+        """Move to the current gait's neutral stance, clearing any trim."""
+        with self._lock:
+            self._trimmed = False
+            return self._move_to(self._pos_x, self._pos_y, dur)
+
+    def stance_trim(self, dx, dy):
+        """
+        Shift the standing pose by (dx, dy) mm. Idle only - a running gait
+        owns the leg positions. Passing (0, 0) eases back to the baseline
+        rather than adopting the trim as a new one.
+
+        Returns:
+            bool: False if not idle.
+        """
+        with self._lock:
+            if self._mode is not Mode.IDLE:
+                return False
+            if dx or dy:
+                self._trimmed = True
+                return self._move_to(self._pos_x + dx, self._pos_y + dy, 0)
+            if self._trimmed:
+                self._trimmed = False
+                return self._move_to(self._pos_x, self._pos_y, 300)
+            return True
+
+    #-------------------#
+    # Gait selection    #
+    #-------------------#
+
+    def set_gait(self, name):
+        """Load `name` and settle onto its stance. False if it won't build."""
+        with self._lock:
+            if not self._load_gait(name):
+                return False
+            self.stand(500)
+            return True
+
+    def next_gait(self):
+        """
+        Advance to the next selectable gait (see selectable_gaits()).
+
+        Returns:
+            str or None: the new gait's name, None if it failed to load.
+        """
+        with self._lock:
+            order = self.selectable
+            nxt = order[(order.index(self._gait_manager.current_gait) + 1) % len(order)]
+            return nxt if self.set_gait(nxt) else None
+
+    #-------------------#
+    # One-shot commands #
+    #-------------------#
+
+    def set_torque(self, on):
+        """Enable/disable motor torque. Enabling settles onto the stance."""
+        with self._lock:
+            if on:
+                self.link.enable_torque()
+                self.stand(500)
+            else:
+                self.link.disable_torque()
+            return on
+
+    def set_led_brightness(self, brightness):
+        """0-255, persisted on the robot."""
+        return self.link.set_led_brightness(brightness)
+
+    def request_battery(self):
+        """Ask for a battery reading; collect it with take_battery_reading()."""
+        return self.link.check_battery()
+
+    def take_battery_reading(self):
+        """
+        The latest battery percentage, once. Returns None until a new reply
+        arrives, so a caller can poll this every frame and only act on fresh
+        values - no callbacks off the tick thread to worry about.
+        """
+        with self._lock:
+            if not self._battery_fresh:
+                return None
+            self._battery_fresh = False
+            return self._battery_pct
+
+    def start_recording(self):
+        """Have the robot log the frames streamed from here (remote mode)."""
+        with self._lock:
+            self._recording = True
+
+    #-------------------#
+    # Scripted routines #
+    #-------------------#
+    # These block for the length of the routine and hold the lock, so the
+    # tick thread stays quiet and nothing else drives the robot mid-sequence.
+
+    def jump(self, settle=5.0):
+        with self._lock:
+            self.idle()
+            self.link.send_jump()
+            time.sleep(settle)
+            # A jump can brown out the robot's MCU. If it reset, torque comes
+            # back up disabled, so re-enable explicitly rather than assuming
+            # the pre-jump state still holds.
+            self.link.enable_torque()
+            self.stand(500)
+
+    def greet(self):
+        with self._lock:
+            self.idle()
+            routine_generator.greet(self.link)
+            self.stand(1000)
+
+    def show_range(self):
+        with self._lock:
+            self.idle()
+            routine_generator.show_range(self.link)
+            self.stand(1000)
+
+    def shoot(self, on_kick=None):
+        """on_kick: optional callable fired as the kick starts (see routine_generator)."""
+        with self._lock:
+            self.idle()
+            routine_generator.shoot(self.link, on_kick)
+            self.stand(500)
+
+    #-------------------#
+    # Lifecycle         #
+    #-------------------#
+
+    def close(self, disable_torque=True):
+        """Stop the tick thread, park the robot, and close the link."""
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+
+        with self._lock:
+            if self._mode is Mode.NATIVE:
+                self.link.stop_gait()
+            self._mode = Mode.IDLE
+            if disable_torque:
+                self.link.disable_torque()
+            self.link.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
+
+    #-------------------#
+    # Private Functions #
+    #-------------------#
+
+    def _load_gait(self, name):
+        """Build trajectories for `name` and adopt its stance. No movement."""
+        if not self._gait_manager.load_gait(name):
+            return False
+        params = self.gaits[name]
+        self._pos_x, self._pos_y = params[1], params[2]
+        chain = GaitManager.SPEED_TIER_CHAINS.get(name)
+        # Start fresh at the fastest tier, matching load_gait()'s own convention.
+        self._native_tier_index = len(chain) - 1 if chain else 0
+        return True
+
+    def _tiered_gait_id(self, magnitude):
+        """Pick the gait_id for the current gait, blending tiers by magnitude."""
+        chain = GaitManager.SPEED_TIER_CHAINS.get(self._gait_manager.current_gait)
+        if not chain:
+            return GAIT_NAME_TO_ID[self._gait_manager.current_gait]
+        self._native_tier_index = GaitManager.resolve_tier_index(
+            chain, GaitManager.TIER_BOUNDARIES, self._native_tier_index, magnitude
+        )
+        return GAIT_NAME_TO_ID[chain[self._native_tier_index]]
+
+    def _start_native(self, gait_id, direction_id):
+        cmd = (gait_id, direction_id)
+        if self._mode is not Mode.NATIVE or cmd != self._native_cmd:
+            self.link.run_gait(gait_id, direction_id)
+            self._native_last_sent = time.monotonic()
+        self._native_cmd = cmd
+        self._mode = Mode.NATIVE
+
+    def _start_stream(self, manager):
+        if self._mode is not Mode.STREAM:
+            self._stream_due = time.monotonic()
+        self._stream_manager = manager
+        self._mode = Mode.STREAM
+
+    def _move_to(self, x, y, dur):
+        q1, q2, ok = self.leg.ik_solve(x, y, True, 1)
+        self.link.move_mirror([q1, q2], dur)
+        return ok
+
+    def _tick(self):
+        """One pass of the background thread."""
+        with self._lock:
+            if self._mode is Mode.STREAM and self._stream_manager is not None:
+                self._stream_tick()
+            elif self._mode is Mode.NATIVE and self._native_cmd is not None:
+                now = time.monotonic()
+                if now - self._native_last_sent >= NATIVE_GAIT_RESEND_INTERVAL:
+                    self.link.run_gait(*self._native_cmd)
+                    self._native_last_sent = now
+
+            self._drain_replies()
+
+    def _stream_tick(self):
+        """
+        Send the trajectory frame that is due now. Advances by however many
+        frames the elapsed time covers (see MAX_STREAM_CATCHUP) and sends
+        only the last, so the gait runs at its intended speed regardless of
+        how accurately the thread wakes up.
+        """
+        now = time.monotonic()
+        if now < self._stream_due:
+            return
+
+        pos = None
+        steps = 0
+        while now >= self._stream_due and steps < MAX_STREAM_CATCHUP:
+            pos = self._stream_manager.tick()
+            self._stream_due += self._tick_period
+            steps += 1
+
+        if now >= self._stream_due:
+            # Stalled for longer than the cap allows - give up on the
+            # backlog rather than sprinting through it.
+            self._stream_due = now + self._tick_period
+
+        if pos:
+            self.link.move_all(pos, 0, self._recording)
+
+    def _drain_replies(self):
+        for _ in range(MAX_REPLIES_PER_TICK):
+            if self.link.bytes_waiting <= 0:
+                return
+            reply = self.link.read_reply()
+            if reply is None:
+                return
+            reply_type, payload = reply
+            if reply_type == ReplyType.BATTERY_REPLY and payload:
+                self._battery_pct = payload[0]
+                self._battery_fresh = True
+
+    def _run(self):
+        next_tick = time.monotonic()
+        while not self._stop_event.is_set():
+            self._tick()
+            next_tick += self._tick_period
+            delay = next_tick - time.monotonic()
+            if delay > 0:
+                # time.sleep() rather than the stop event's wait(): on
+                # Windows, Event.wait() is stuck with the ~15.6ms system
+                # timer granularity while sleep() gets a high-resolution
+                # timer, which is the difference between waking 64 and 200
+                # times a second. Cost is that close() takes up to one tick
+                # to be noticed, which nothing cares about.
+                time.sleep(delay)
+            else:
+                # Fell behind - a blocking routine held the lock, most
+                # likely. Resync instead of trying to replay lost ticks.
+                next_tick = time.monotonic()

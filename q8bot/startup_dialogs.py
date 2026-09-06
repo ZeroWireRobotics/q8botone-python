@@ -12,7 +12,7 @@ inside each function for the same reason.
 
 import sys
 
-from helpers import Q8Logger
+from .helpers import Q8Logger
 
 KEYBOARD_LABEL = "Keyboard (Default)"
 

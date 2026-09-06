@@ -19,9 +19,9 @@ Usage:
 
 import os
 
-from kinematics_solver import k_solver
-from gait_manager import GaitManager, GAITS
-from protocol import DIRECTION_ORDER, GAIT_IDS
+from .kinematics_solver import k_solver
+from .gait_manager import GaitManager, GAITS
+from .protocol import DIRECTION_ORDER, GAIT_IDS
 
 # Q8bot leg configuration (must match operate.py)
 CENTER_DIST = 19.5

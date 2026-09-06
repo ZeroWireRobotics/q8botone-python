@@ -7,7 +7,7 @@ Defines keyboard and joystick control schemes using a two-layer mapping system.
 
 import math
 import pygame
-from helpers import Q8Logger
+from .helpers import Q8Logger
 
 # =============================================================================
 # KEYBOARD CONFIGURATION

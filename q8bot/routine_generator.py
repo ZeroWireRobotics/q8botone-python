@@ -60,13 +60,17 @@ def greet(q8):
     q8.move_all(G6, 500, False)
     time.sleep(0.7)
 
-def shoot(q8, joystick=None):
+def shoot(q8, on_kick=None):
+    """
+    on_kick: optional callable fired the instant the kick starts, for a front
+    end that wants to sync something to it (operate.py buzzes the gamepad).
+    Takes a callback rather than a joystick so this module stays input-
+    agnostic - the buzz has to be timed to the kick, not the trigger press,
+    which is why the hook is here instead of at the call site.
+    """
     q8.move_all(S1, 500, False)
     time.sleep(0.5)
-    if joystick:
-        try:
-            joystick.rumble(0.5, 0.5, 100)  # Quick buzz timed to the kick, not the trigger press
-        except Exception:
-            pass  # Rumble unsupported on this device - not fatal
+    if on_kick:
+        on_kick()
     q8.move_all(S2, 200, False)
     time.sleep(0.5)

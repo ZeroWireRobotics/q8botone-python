@@ -6,7 +6,7 @@ This module manages gait trajectories, movement state, and direction switching
 for cyclic locomotion patterns.
 '''
 
-from gait_generator import (
+from .gait_generator import (
     generate_trot_trajectories,
     generate_walk_trajectories,
     generate_bound_trajectories,

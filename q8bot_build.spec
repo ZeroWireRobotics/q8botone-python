@@ -12,7 +12,9 @@ Output:
 block_cipher = None
 
 a = Analysis(
-    ['q8bot/operate.py'],
+    # q8bot is a package now, so build from the entry-point shim rather than
+    # a module inside it (relative imports won't resolve otherwise).
+    ['run_operate.py'],
     pathex=[],
     binaries=[],
     datas=[
