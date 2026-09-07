@@ -126,6 +126,12 @@ class Q8Bot:
         # commands are built out of the lower-level ones (idle -> stand).
         self._lock = threading.RLock()
 
+        # Battery gets its own lock rather than sharing the one above: a UI
+        # polls the reading every frame, and the scripted routines hold the
+        # main lock for seconds at a time (show_range for ~13), which would
+        # otherwise freeze that poll - and the UI thread with it.
+        self._battery_lock = threading.Lock()
+
         self._mode = Mode.IDLE
         self._stream_manager = None   # which GaitManager the tick pulls from
         self._native_cmd = None       # (gait_id, direction_id) in flight
@@ -397,7 +403,7 @@ class Q8Bot:
         arrives, so a caller can poll this every frame and only act on fresh
         values - no callbacks off the tick thread to worry about.
         """
-        with self._lock:
+        with self._battery_lock:
             if not self._battery_fresh:
                 return None
             self._battery_fresh = False
@@ -604,8 +610,9 @@ class Q8Bot:
                 return
             reply_type, payload = reply
             if reply_type == ReplyType.BATTERY_REPLY and payload:
-                self._battery_pct = payload[0]
-                self._battery_fresh = True
+                with self._battery_lock:
+                    self._battery_pct = payload[0]
+                    self._battery_fresh = True
 
     def _run(self):
         next_tick = time.monotonic()

@@ -240,6 +240,16 @@ def init_selected_joystick(index):
         Q8Logger.debug(">>> Using KEYBOARD control <<<")
         return False, None, None
 
+    # Both idempotent, and make this safe to call without having gone through
+    # list_available_joysticks() first - a UI may already know the index.
+    #
+    # display.init() is not optional despite there being nothing to draw:
+    # reading a pad goes through pygame.event.pump(), which raises "video
+    # system not initialized" without it. It creates no window on its own
+    # (that is set_mode's job), so a Qt or headless front end pays nothing.
+    pygame.display.init()
+    pygame.joystick.init()
+
     js = pygame.joystick.Joystick(index)
     js.init()
     joystick_mapping = get_joystick_mapping(js)

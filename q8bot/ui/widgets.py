@@ -17,7 +17,7 @@ from PySide6.QtCore import (
     Qt,
 )
 from PySide6.QtGui import QColor, QPainter, QPalette
-from PySide6.QtWidgets import QAbstractButton, QLabel, QSizePolicy
+from PySide6.QtWidgets import QAbstractButton, QLabel, QSizePolicy, QWidget
 
 
 def _blend(start, end, amount):
@@ -115,6 +115,79 @@ class ToggleSwitch(QAbstractButton):
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(0, track_top, width - 1, track_height - 1,
                                     track_height / 2, track_height / 2)
+
+
+class StatusDot(QWidget):
+    """
+    A small indicator lamp. Pulses while pending, so "waiting on the robot"
+    is distinguishable at a glance from "sitting there doing nothing".
+
+    Always pair it with text - colour alone is not a signal everyone can
+    read (see ConnectionPanel, which puts a word beside every dot).
+    """
+
+    OFF = 'off'
+    PENDING = 'pending'
+    LIVE = 'live'
+    ERROR = 'error'
+
+    COLORS = {
+        OFF: QColor('#9098a0'),
+        PENDING: QColor('#d9820a'),
+        LIVE: QColor('#2ea043'),
+        ERROR: QColor('#d13438'),
+    }
+    DIAMETER = 12
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(self.DIAMETER + 4, self.DIAMETER + 4)
+        self._state = self.OFF
+        self._glow = 1.0
+
+        self._pulse = QPropertyAnimation(self, b"glow", self)
+        self._pulse.setDuration(900)
+        self._pulse.setStartValue(1.0)
+        self._pulse.setKeyValueAt(0.5, 0.35)
+        self._pulse.setEndValue(1.0)
+        self._pulse.setLoopCount(-1)
+
+    def _get_glow(self):
+        return self._glow
+
+    def _set_glow(self, value):
+        self._glow = value
+        self.update()
+
+    glow = Property(float, _get_glow, _set_glow)
+
+    @property
+    def state(self):
+        return self._state
+
+    def set_state(self, state, tooltip=""):
+        self._state = state
+        self.setToolTip(tooltip)
+        if state == self.PENDING:
+            if self._pulse.state() != QPropertyAnimation.Running:
+                self._pulse.start()
+        else:
+            self._pulse.stop()
+            self._glow = 1.0
+        self.update()
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        color = QColor(self.COLORS[self._state])
+        if self._state == self.PENDING:
+            color = _blend(self.palette().color(QPalette.Window), color, self._glow)
+
+        centre = (self.width() - self.DIAMETER) / 2
+        painter.setPen(_blend(color, QColor('#000000'), 0.35))
+        painter.setBrush(color)
+        painter.drawEllipse(QRectF(centre, centre, self.DIAMETER, self.DIAMETER))
 
 
 class ClickableLabel(QLabel):

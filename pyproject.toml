@@ -21,7 +21,7 @@ dependencies = ["pyserial>=3.5"]
 app = ["pygame>=2.5.2"]
 # The desktop control window (q8bot.ui). pygame comes too - gamepad
 # enumeration reuses control_config.py's per-controller mappings.
-gui = ["PySide6>=6.6", "pygame>=2.5.2"]
+gui = ["PySide6>=6.6", "pygame>=2.5.2", "pyqtgraph>=0.13", "PyOpenGL>=3.1", "numpy>=1.26"]
 # Only k_solver.fk_solve() needs this, and it imports it on demand.
 fk = ["scipy>=1.11.4"]
 
@@ -31,3 +31,7 @@ q8bot-gui = "q8bot.ui:main"
 
 [tool.setuptools]
 packages = ["q8bot", "q8bot.ui"]
+
+[tool.setuptools.package-data]
+# The 3D viewer's mesh, so it survives a pip install (see q8bot/assets).
+"q8bot" = ["assets/*.stl"]
