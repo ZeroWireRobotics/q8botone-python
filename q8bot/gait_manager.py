@@ -42,6 +42,65 @@ GAITS = {
     # 'PRONK':     ['pronk', 9.75, 33.36, 40, 0, 20, 60, 10],
 }
 
+# Human-readable names for anything a user picks between - a GUI dropdown or
+# a printed menu wants these, not the raw dict keys. Descriptions state what
+# the parameters above actually do, not what a gait is "for". Gaits with no
+# entry (the speed-tier companions) are never shown to a user.
+GAIT_LABELS = {
+    'TROT_FAST':    ("Trot", "Diagonal pairs, standing height. Stride and step rate "
+                             "follow how far the stick is pushed."),
+    'TROT_HIGH':    ("High Trot", "Trot from a taller stance with a shorter stride "
+                                  "and less foot lift. One speed."),
+    'TROT_LOW':     ("Low Trot", "Trot from a crouched stance with a shorter stride "
+                                 "and less foot lift. One speed."),
+    'TROT_INPLACE': ("Trot in Place", "Trot with no stride at all - the feet lift and "
+                                      "land without going anywhere."),
+    'CRAWL':        ("Crawl", "One foot at a time, three always down. Slow and "
+                              "stable; forward and back only."),
+    'BOUND':        ("Bound", "Front and rear pairs move together. Forward and "
+                              "back only."),
+}
+
+
+class GaitInfo:
+    """
+    What a front end needs to show a gait, without reaching into GAITS'
+    positional lists. Build with gait_info(); see Q8Bot.catalog.
+    """
+
+    __slots__ = ('name', 'label', 'description', 'stance', 'speed_tiers')
+
+    def __init__(self, name, label, description, stance, speed_tiers):
+        self.name = name
+        self.label = label
+        self.description = description
+        self.stance = stance          # (x, y) mm the gait rests at
+        self.speed_tiers = speed_tiers  # 1 unless the gait blends by stick push
+
+    def __repr__(self):
+        return (f"GaitInfo(name={self.name!r}, label={self.label!r}, "
+                f"stance={self.stance}, speed_tiers={self.speed_tiers})")
+
+
+def gait_info(name, gaits=None):
+    """
+    Display metadata for one gait. Falls back to the raw name as its label
+    if it has no GAIT_LABELS entry, so a newly added gait still shows up
+    rather than disappearing from a menu.
+
+    Returns:
+        GaitInfo, or None if the gait doesn't exist.
+    """
+    gaits = gaits if gaits is not None else GAITS
+    params = gaits.get(name)
+    if params is None:
+        return None
+
+    label, description = GAIT_LABELS.get(name, (name, ""))
+    chain = GaitManager.SPEED_TIER_CHAINS.get(name)
+    return GaitInfo(name, label, description, (params[1], params[2]),
+                    len(chain) if chain else 1)
+
 
 class GaitManager:
     """

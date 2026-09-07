@@ -48,7 +48,9 @@ class PygameLogOverlay(logging.Handler):
         if self._font is None:
             self._font = pygame.font.Font(None, 24)
 
-        for i, (timestamp, level, msg) in enumerate(self._messages):
+        # Snapshot first: Q8Bot's tick thread logs too, and a deque that grows
+        # past maxlen mid-iteration raises "deque mutated during iteration".
+        for i, (timestamp, level, msg) in enumerate(list(self._messages)):
             color = LEVEL_COLORS.get(level, DEFAULT_COLOR)
             text_surface = self._font.render(f"[{timestamp}] {level}: {msg}", True, color)
             surface.blit(text_surface, (x, y + i * line_height))

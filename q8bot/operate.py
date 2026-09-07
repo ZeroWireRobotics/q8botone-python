@@ -184,6 +184,9 @@ def main():
     bot.stand(1000)
 
 
+    link_lost = False  # so the disconnect message is logged once, not per frame
+
+
     def rumble_gamepad():
         """Fired mid-shoot, timed to the kick rather than the trigger press."""
         if not joystick:
@@ -227,6 +230,17 @@ def main():
         battery = bot.take_battery_reading()
         if battery is not None:
             log.info(f"Battery: {battery}%")
+
+        if not bot.connected:
+            # Cable pulled, controller reset. Q8Bot has already logged why and
+            # every command is a no-op now, so keep the window up (the error
+            # is on screen) and let the user quit deliberately.
+            if not link_lost:
+                log.error("Robot disconnected - press exit to quit.")
+                link_lost = True
+            if input_handler.is_action_pressed('exit'):
+                break
+            continue
 
         direction = input_handler.get_movement_direction()
         if direction:

@@ -25,16 +25,17 @@ Commands are safe to call from any thread. The scripted routines (jump,
 greet, show_range, shoot) block for as long as the routine takes.
 '''
 
+import functools
 import threading
 import time
 from enum import Enum
 
 from . import routine_generator
 from .espnow import q8_espnow
-from .gait_manager import GAITS, GaitManager
-from .helpers import XiaoPortFinder
+from .gait_manager import GAITS, GaitManager, gait_info
+from .helpers import Q8Logger, XiaoPortFinder
 from .kinematics_solver import k_solver
-from .protocol import DIRECTION_TO_ID, GAIT_NAME_TO_ID, ReplyType
+from .protocol import DIRECTION_ORDER, DIRECTION_TO_ID, GAIT_NAME_TO_ID, ReplyType
 
 # Q8bot leg configuration
 CENTER_DIST = 19.5  # Distance between two actuators
@@ -90,6 +91,20 @@ def selectable_gaits(gaits=GAITS):
             if name not in companions and name not in INTERNAL_ONLY_GAITS]
 
 
+def _needs_link(method):
+    """
+    Marks a command as needing a live robot. Once the link is gone the
+    command does nothing and reports False, rather than going through the
+    motions and reporting success against a robot that isn't there.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        if not self._connected:
+            return False
+        return method(self, *args, **kwargs)
+    return wrapper
+
+
 class Q8Bot:
     def __init__(self, link, use_local_gaits=True, gaits=GAITS, leg=None,
                  tick_hz=TICK_HZ):
@@ -123,6 +138,8 @@ class Q8Bot:
         self._battery_fresh = False
         self._pos_x = 0.0
         self._pos_y = 0.0
+        self._connected = True
+        self._last_error = None
 
         # Separate managers so trot_in_place() never disturbs the phase or
         # tier state of whichever gait the sticks are driving.
@@ -159,6 +176,21 @@ class Q8Bot:
     #-------------------#
 
     @property
+    def connected(self):
+        """
+        False once the link has failed (cable pulled, controller reset) or
+        close() has been called. Every command becomes a no-op returning
+        False from that point, so a front end should poll this rather than
+        trusting a command's return value alone.
+        """
+        return self._connected
+
+    @property
+    def last_error(self):
+        """The exception that took the link down, or None."""
+        return self._last_error
+
+    @property
     def mode(self):
         return self._mode
 
@@ -166,6 +198,29 @@ class Q8Bot:
     def gait(self):
         """Name of the gait the sticks/move() are currently driving."""
         return self._gait_manager.current_gait
+
+    @property
+    def catalog(self):
+        """
+        [GaitInfo, ...] for the user-selectable gaits, in set_gait()/
+        next_gait() order - label, description, stance and speed-tier count
+        for a menu or dropdown.
+        """
+        return [gait_info(name, self.gaits) for name in self.selectable]
+
+    def supported_directions(self):
+        """
+        Which of protocol.DIRECTION_ORDER the current gait can actually do,
+        resolved exactly as move() will (exact match, else fallback chain).
+        CRAWL and BOUND, for instance, have no true 'l'/'r'. Lets a front end
+        grey out the controls that would do nothing.
+
+        Returns:
+            list[str]: direction keys, in DIRECTION_ORDER order.
+        """
+        with self._lock:
+            return [d for d in DIRECTION_ORDER
+                    if self._gait_manager.resolve_direction(d) is not None]
 
     @property
     def stance(self):
@@ -184,6 +239,7 @@ class Q8Bot:
     # Movement          #
     #-------------------#
 
+    @_needs_link
     def move(self, direction, magnitude=1.0):
         """
         Walk in `direction` (see protocol.DIRECTION_ORDER) until told
@@ -215,6 +271,7 @@ class Q8Bot:
                 self._start_stream(self._gait_manager)
             return True
 
+    @_needs_link
     def trot_in_place(self):
         """
         Trot without going anywhere (TROT_INPLACE - a trot with zero stride,
@@ -229,6 +286,7 @@ class Q8Bot:
                 self._start_stream(self._inplace_manager)
             return True
 
+    @_needs_link
     def idle(self):
         """
         Stop whatever gait is running and settle onto the current stance.
@@ -240,7 +298,7 @@ class Q8Bot:
             if self._mode is Mode.IDLE:
                 return
             if self._mode is Mode.NATIVE:
-                self.link.stop_gait()
+                self._guard(self.link.stop_gait)
             elif self._stream_manager is not None:
                 self._stream_manager.stop()
 
@@ -252,15 +310,17 @@ class Q8Bot:
             # Unconditional, matching the behaviour this replaced. Worth
             # making conditional on self._recording at some point - the robot
             # acts on RECORD_SEND whether or not anything was recorded.
-            self.link.finish_recording()
+            self._guard(self.link.finish_recording)
             self._recording = False
 
+    @_needs_link
     def stand(self, dur=0):
         """Move to the current gait's neutral stance, clearing any trim."""
         with self._lock:
             self._trimmed = False
             return self._move_to(self._pos_x, self._pos_y, dur)
 
+    @_needs_link
     def stance_trim(self, dx, dy):
         """
         Shift the standing pose by (dx, dy) mm. Idle only - a running gait
@@ -285,6 +345,7 @@ class Q8Bot:
     # Gait selection    #
     #-------------------#
 
+    @_needs_link
     def set_gait(self, name):
         """Load `name` and settle onto its stance. False if it won't build."""
         with self._lock:
@@ -309,23 +370,26 @@ class Q8Bot:
     # One-shot commands #
     #-------------------#
 
+    @_needs_link
     def set_torque(self, on):
         """Enable/disable motor torque. Enabling settles onto the stance."""
         with self._lock:
             if on:
-                self.link.enable_torque()
+                self._guard(self.link.enable_torque)
                 self.stand(500)
             else:
-                self.link.disable_torque()
+                self._guard(self.link.disable_torque)
             return on
 
+    @_needs_link
     def set_led_brightness(self, brightness):
         """0-255, persisted on the robot."""
-        return self.link.set_led_brightness(brightness)
+        return self._guard(self.link.set_led_brightness, brightness)
 
+    @_needs_link
     def request_battery(self):
         """Ask for a battery reading; collect it with take_battery_reading()."""
-        return self.link.check_battery()
+        return self._guard(self.link.check_battery)
 
     def take_battery_reading(self):
         """
@@ -350,34 +414,38 @@ class Q8Bot:
     # These block for the length of the routine and hold the lock, so the
     # tick thread stays quiet and nothing else drives the robot mid-sequence.
 
+    @_needs_link
     def jump(self, settle=5.0):
         with self._lock:
             self.idle()
-            self.link.send_jump()
+            self._guard(self.link.send_jump)
             time.sleep(settle)
             # A jump can brown out the robot's MCU. If it reset, torque comes
             # back up disabled, so re-enable explicitly rather than assuming
             # the pre-jump state still holds.
-            self.link.enable_torque()
+            self._guard(self.link.enable_torque)
             self.stand(500)
 
+    @_needs_link
     def greet(self):
         with self._lock:
             self.idle()
-            routine_generator.greet(self.link)
+            self._guard(routine_generator.greet, self.link)
             self.stand(1000)
 
+    @_needs_link
     def show_range(self):
         with self._lock:
             self.idle()
-            routine_generator.show_range(self.link)
+            self._guard(routine_generator.show_range, self.link)
             self.stand(1000)
 
+    @_needs_link
     def shoot(self, on_kick=None):
         """on_kick: optional callable fired as the kick starts (see routine_generator)."""
         with self._lock:
             self.idle()
-            routine_generator.shoot(self.link, on_kick)
+            self._guard(routine_generator.shoot, self.link, on_kick)
             self.stand(500)
 
     #-------------------#
@@ -393,11 +461,17 @@ class Q8Bot:
 
         with self._lock:
             if self._mode is Mode.NATIVE:
-                self.link.stop_gait()
+                self._guard(self.link.stop_gait)
             self._mode = Mode.IDLE
             if disable_torque:
-                self.link.disable_torque()
-            self.link.close()
+                self._guard(self.link.disable_torque)
+            # Deliberately after the parting commands, so they still go out,
+            # and before link.close() so nothing races in behind them.
+            self._connected = False
+            try:
+                self.link.close()
+            except Exception as exc:
+                self._last_error = exc
 
     def __enter__(self):
         return self
@@ -409,6 +483,35 @@ class Q8Bot:
     #-------------------#
     # Private Functions #
     #-------------------#
+
+    def _guard(self, fn, *args, **kwargs):
+        """
+        Run something that talks to the link, treating a failure as "the
+        robot is gone" rather than letting it escape. A pulled cable raises
+        from whichever thread happened to be writing - the tick thread most
+        often, where an escaping exception would kill it silently and leave
+        the front end showing a robot that stopped moving minutes ago.
+
+        Returns False (and marks the bot disconnected) instead.
+        """
+        if not self._connected:
+            return False
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            self._link_failed(exc)
+            return False
+
+    def _link_failed(self, exc):
+        """Record a dead link once, and stop trying to drive it."""
+        if not self._connected:
+            return
+        self._connected = False
+        self._last_error = exc
+        self._mode = Mode.IDLE
+        self._stream_manager = None
+        self._native_cmd = None
+        Q8Logger.error(f"Lost connection to the robot: {exc}")
 
     def _load_gait(self, name):
         """Build trajectories for `name` and adopt its stance. No movement."""
@@ -434,7 +537,7 @@ class Q8Bot:
     def _start_native(self, gait_id, direction_id):
         cmd = (gait_id, direction_id)
         if self._mode is not Mode.NATIVE or cmd != self._native_cmd:
-            self.link.run_gait(gait_id, direction_id)
+            self._guard(self.link.run_gait, gait_id, direction_id)
             self._native_last_sent = time.monotonic()
         self._native_cmd = cmd
         self._mode = Mode.NATIVE
@@ -447,7 +550,7 @@ class Q8Bot:
 
     def _move_to(self, x, y, dur):
         q1, q2, ok = self.leg.ik_solve(x, y, True, 1)
-        self.link.move_mirror([q1, q2], dur)
+        self._guard(self.link.move_mirror, [q1, q2], dur)
         return ok
 
     def _tick(self):
@@ -458,7 +561,7 @@ class Q8Bot:
             elif self._mode is Mode.NATIVE and self._native_cmd is not None:
                 now = time.monotonic()
                 if now - self._native_last_sent >= NATIVE_GAIT_RESEND_INTERVAL:
-                    self.link.run_gait(*self._native_cmd)
+                    self._guard(self.link.run_gait, *self._native_cmd)
                     self._native_last_sent = now
 
             self._drain_replies()
@@ -487,9 +590,12 @@ class Q8Bot:
             self._stream_due = now + self._tick_period
 
         if pos:
-            self.link.move_all(pos, 0, self._recording)
+            self._guard(self.link.move_all, pos, 0, self._recording)
 
     def _drain_replies(self):
+        self._guard(self._drain_replies_unguarded)
+
+    def _drain_replies_unguarded(self):
         for _ in range(MAX_REPLIES_PER_TICK):
             if self.link.bytes_waiting <= 0:
                 return
@@ -504,7 +610,13 @@ class Q8Bot:
     def _run(self):
         next_tick = time.monotonic()
         while not self._stop_event.is_set():
-            self._tick()
+            # Belt and braces on top of _guard(): whatever happens in a tick,
+            # this thread has to survive it. A thread that dies here takes
+            # every gait with it and tells nobody.
+            try:
+                self._tick()
+            except Exception as exc:
+                self._link_failed(exc)
             next_tick += self._tick_period
             delay = next_tick - time.monotonic()
             if delay > 0:

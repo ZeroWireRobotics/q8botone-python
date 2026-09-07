@@ -23,7 +23,7 @@ is the one thing that needs scipy, and imports it on demand.
 __version__ = '0.1.0'
 
 from .espnow import q8_espnow
-from .gait_manager import GAITS, GaitManager
+from .gait_manager import GAITS, GaitInfo, GaitManager, gait_info
 from .helpers import Q8Logger, XiaoPortFinder
 from .kinematics_solver import k_solver
 from .protocol import (
@@ -47,7 +47,9 @@ __all__ = [
     'XiaoPortFinder',
     # gaits and kinematics
     'GAITS',
+    'GaitInfo',
     'GaitManager',
+    'gait_info',
     'k_solver',
     # wire protocol
     'CmdType',
