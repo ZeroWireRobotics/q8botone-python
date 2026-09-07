@@ -182,9 +182,12 @@ def check_joystick_compatible(joystick):
     required_buttons = JOYSTICK_CONFIG['requirements']['min_buttons']
 
     if num_axes < required_axes or num_buttons < required_buttons:
-        Q8Logger.warning(f"Joystick '{joystick_name}' does not meet requirements.")
-        Q8Logger.warning(f"  Required: {required_axes} axes, {required_buttons} buttons")
-        Q8Logger.warning(f"  Found: {num_axes} axes, {num_buttons} buttons")
+        # Debug, not a warning: SDL enumerates plenty of things as joysticks
+        # that were never meant to be one (Bluetooth mice, for instance), and
+        # rejecting those is the system working, not a problem to report.
+        Q8Logger.debug(f"Joystick '{joystick_name}' does not meet requirements "
+                       f"(needs {required_axes} axes / {required_buttons} buttons, "
+                       f"has {num_axes} / {num_buttons}) - not offering it.")
         return False
 
     Q8Logger.debug(f"Joystick '{joystick_name}' meets minimum requirements (generic mode)")

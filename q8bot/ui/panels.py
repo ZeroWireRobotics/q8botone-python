@@ -14,7 +14,6 @@ import html
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QFormLayout,
     QFrame,
@@ -31,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..helpers import XiaoPortFinder
+from .widgets import ClickableLabel, ToggleSwitch
 
 LEVEL_COLORS = {
     'WARNING': '#b58900',
@@ -76,6 +76,7 @@ class ConnectionPanel(QGroupBox):
 
     def __init__(self, list_gamepads, parent=None):
         super().__init__("Connection", parent)
+        self._list_gamepads = list_gamepads
         self._robot_connected = False
         self._gamepad_connected = False
 
@@ -84,19 +85,18 @@ class ConnectionPanel(QGroupBox):
         self.robot_button = QPushButton("Connect")
         self.robot_button.clicked.connect(self._toggle_robot)
 
-        self.gamepad_combo = RefreshingCombo(
-            lambda: [(d['name'] if d['compatible'] else f"{d['name']} (incompatible)",
-                      d['index']) for d in list_gamepads()] or [("No gamepad found", None)]
-        )
+        self.gamepad_combo = RefreshingCombo(self._gamepads)
         self.gamepad_combo.setMinimumWidth(200)
         self.gamepad_button = QPushButton("Connect")
         self.gamepad_button.clicked.connect(self._toggle_gamepad)
 
-        self.mode_toggle = QCheckBox()
+        self.mode_toggle = ToggleSwitch()
         self.mode_toggle.setChecked(True)  # PC mode until a gamepad drives things
-        self.mode_toggle.stateChanged.connect(self._mode_changed)
-        self.xbox_label = QLabel("Xbox Mode")
-        self.pc_label = QLabel("PC Mode")
+        self.mode_toggle.toggled.connect(self._mode_changed)
+        self.xbox_label = ClickableLabel(
+            "Xbox Mode", lambda: self.mode_toggle.setChecked(False))
+        self.pc_label = ClickableLabel(
+            "PC Mode", lambda: self.mode_toggle.setChecked(True))
 
         grid = QGridLayout(self)
         grid.addWidget(QLabel("Robot Controller"), 0, 0)
@@ -114,8 +114,12 @@ class ConnectionPanel(QGroupBox):
         mode_row.addStretch()
         grid.addLayout(mode_row, 2, 0, 1, 3)
 
+        self.port_combo.currentIndexChanged.connect(self._update_buttons)
+        self.gamepad_combo.currentIndexChanged.connect(self._update_buttons)
+
         self.port_combo.repopulate()
         self.gamepad_combo.repopulate()
+        self._update_buttons()
         self._paint_mode()
 
     def _robot_ports(self):
@@ -123,6 +127,21 @@ class ConnectionPanel(QGroupBox):
         if not ports:
             return [("No controller found", None)]
         return [(p, p) for p in ports]
+
+    def _gamepads(self):
+        # Compatible devices only. SDL happily reports Bluetooth mice and
+        # other oddities as joysticks, and offering one just leads to a
+        # Connect that can't work.
+        usable = [(d['name'], d['index']) for d in self._list_gamepads()
+                  if d['compatible']]
+        return usable or [("No gamepad found", None)]
+
+    def _update_buttons(self):
+        """Nothing valid selected means nothing to connect to."""
+        if not self._robot_connected:
+            self.robot_button.setEnabled(self.port_combo.currentData() is not None)
+        if not self._gamepad_connected:
+            self.gamepad_button.setEnabled(self.gamepad_combo.currentData() is not None)
 
     def _toggle_robot(self):
         if self._robot_connected:
@@ -141,12 +160,16 @@ class ConnectionPanel(QGroupBox):
     def set_robot_connected(self, connected):
         self._robot_connected = connected
         self.robot_button.setText("Disconnect" if connected else "Connect")
+        self.robot_button.setEnabled(True)
         self.port_combo.setEnabled(not connected)
+        self._update_buttons()
 
     def set_gamepad_connected(self, connected):
         self._gamepad_connected = connected
         self.gamepad_button.setText("Disconnect" if connected else "Connect")
+        self.gamepad_button.setEnabled(True)
         self.gamepad_combo.setEnabled(not connected)
+        self._update_buttons()
 
     @property
     def pc_mode(self):
