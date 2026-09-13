@@ -137,7 +137,6 @@ class Q8Bot:
         self._native_cmd = None       # (gait_id, direction_id) in flight
         self._native_last_sent = 0.0
         self._native_tier_index = 0
-        self._recording = False
         self._trimmed = False
         self._stream_due = 0.0        # monotonic time the next frame is due
         self._battery_pct = None
@@ -237,10 +236,6 @@ class Q8Bot:
     def torque(self):
         return self.link.torque_on
 
-    @property
-    def recording(self):
-        return self._recording
-
     #-------------------#
     # Movement          #
     #-------------------#
@@ -313,11 +308,6 @@ class Q8Bot:
             self._mode = Mode.IDLE
 
             self.stand()
-            # Unconditional, matching the behaviour this replaced. Worth
-            # making conditional on self._recording at some point - the robot
-            # acts on RECORD_SEND whether or not anything was recorded.
-            self._guard(self.link.finish_recording)
-            self._recording = False
 
     @_needs_link
     def stand(self, dur=0):
@@ -408,11 +398,6 @@ class Q8Bot:
                 return None
             self._battery_fresh = False
             return self._battery_pct
-
-    def start_recording(self):
-        """Have the robot log the frames streamed from here (remote mode)."""
-        with self._lock:
-            self._recording = True
 
     #-------------------#
     # Scripted routines #
@@ -596,7 +581,7 @@ class Q8Bot:
             self._stream_due = now + self._tick_period
 
         if pos:
-            self._guard(self.link.move_all, pos, 0, self._recording)
+            self._guard(self.link.move_all, pos, 0)
 
     def _drain_replies(self):
         self._guard(self._drain_replies_unguarded)

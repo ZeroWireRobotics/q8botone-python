@@ -289,10 +289,6 @@ def main():
             elif input_handler.is_action_pressed('battery'):
                 bot.request_battery()
                 time.sleep(0.2)
-            elif input_handler.is_action_pressed('record'):
-                log.debug("Record next movement")
-                bot.start_recording()
-                time.sleep(0.2)
             elif input_handler.is_action_pressed('show_range'):
                 log.info("Show Range")
                 bot.show_range()

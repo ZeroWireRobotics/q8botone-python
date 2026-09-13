@@ -29,7 +29,6 @@ KEYBOARD_MAPPING = {
         'jump': pygame.K_j,
         'reset': pygame.K_r,
         'exit': pygame.K_ESCAPE,
-        'record': pygame.K_z,
         'show_range': pygame.K_c,
         'brightness_cycle': pygame.K_l,
     }

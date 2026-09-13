@@ -94,12 +94,6 @@ class q8_espnow:
     def check_battery(self):
         return self._send(CmdType.BATTERY_REQUEST)
 
-    def record_data(self):
-        return self.move_all([0] * 8, 0, True)
-
-    def finish_recording(self):
-        return self._send(CmdType.RECORD_SEND)
-
     def send_jump(self):
         return self._send(CmdType.JUMP)
 
@@ -134,11 +128,15 @@ class q8_espnow:
         brightness = max(0, min(255, int(brightness)))
         return self._send(CmdType.LED_BRIGHTNESS, bytes([brightness]))
 
-    def move_all(self, joints_pos, dur = 0, record = True):
+    def move_all(self, joints_pos, dur = 0):
         # Expects 8 positions in deg. For example: [0, 90, 0, 90, 0, 90, 0, 90]
+        #
+        # The trailing byte was a "record this frame" flag. Recording is gone,
+        # but the byte stays in the layout so the controller's own MOVE
+        # builder (firmware/q8bot_controller) doesn't have to change with it.
         try:
             angles_tenths = [round(a * 10) for a in joints_pos]
-            payload = struct.pack('<8hHB', *angles_tenths, dur, int(record))
+            payload = struct.pack('<8hHB', *angles_tenths, dur, 0)
         except Exception:
             return False
         return self._send(CmdType.MOVE, payload)
@@ -149,7 +147,7 @@ class q8_espnow:
         for i in range(4):
             mirrored_pos.append(joint_pos[0])
             mirrored_pos.append(joint_pos[1])
-        return self.move_all(mirrored_pos, dur, False)
+        return self.move_all(mirrored_pos, dur)
 
     #-------------------#
     # Replies           #
@@ -165,7 +163,7 @@ class q8_espnow:
 
     def read_reply(self):
         """
-        Read one reply frame (e.g. a pending battery/recorded-data response).
+        Read one reply frame (e.g. a pending battery response).
 
         Returns:
             (ReplyType, payload_bytes) or None if nothing valid was read.

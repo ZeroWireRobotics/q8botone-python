@@ -22,7 +22,7 @@ class CmdType(IntEnum):
     MOVE = 0x01
     TORQUE_SET = 0x02
     BATTERY_REQUEST = 0x03
-    RECORD_SEND = 0x04
+    RECORD_SEND = 0x04     # retired - recording removed; do not reuse this id
     JUMP = 0x05
     GAIT_RUN = 0x06   # {gait_id: uint8, direction_id: uint8} - run a local gait/direction autonomously
     GAIT_STOP = 0x07  # no payload - stop autonomous gait, hand control back to raw MOVE
@@ -36,7 +36,7 @@ class CmdType(IntEnum):
 class ReplyType(IntEnum):
     """Robot -> host replies."""
     BATTERY_REPLY = 0x81
-    RECORD_DATA_REPLY = 0x82
+    RECORD_DATA_REPLY = 0x82  # retired alongside RECORD_SEND; do not reuse
 
 
 # Canonical direction ordering for GAIT_RUN's direction_id (0-11). Must match

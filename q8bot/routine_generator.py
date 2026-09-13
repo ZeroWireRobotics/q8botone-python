@@ -39,25 +39,25 @@ S2 = [90, 225, 90, 225, 90, 225, 90, 225]
 
 def show_range(q8):
     for pos in R:
-        q8.move_all(pos, 1000, False)
+        q8.move_all(pos, 1000)
         time.sleep(1.5)
     return
 
 
 def greet(q8):
-    q8.move_all(G1, 1000, False)
+    q8.move_all(G1, 1000)
     time.sleep(1.1)
-    q8.move_all(G2, 1000, False)
+    q8.move_all(G2, 1000)
     time.sleep(1)
-    q8.move_all(G3, 500, False)
+    q8.move_all(G3, 500)
     time.sleep(1)
     for _ in range(3):
-        q8.move_all(G4, 200, False)
+        q8.move_all(G4, 200)
         time.sleep(0.25)
-        q8.move_all(G5, 200, False)
+        q8.move_all(G5, 200)
         time.sleep(0.25)
     time.sleep(0.75)
-    q8.move_all(G6, 500, False)
+    q8.move_all(G6, 500)
     time.sleep(0.7)
 
 def shoot(q8, on_kick=None):
@@ -68,9 +68,9 @@ def shoot(q8, on_kick=None):
     agnostic - the buzz has to be timed to the kick, not the trigger press,
     which is why the hook is here instead of at the call site.
     """
-    q8.move_all(S1, 500, False)
+    q8.move_all(S1, 500)
     time.sleep(0.5)
     if on_kick:
         on_kick()
-    q8.move_all(S2, 200, False)
+    q8.move_all(S2, 200)
     time.sleep(0.5)
