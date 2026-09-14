@@ -22,10 +22,12 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
+    QSlider,
     QVBoxLayout,
 )
 
 from ..helpers import XiaoPortFinder
+from ..protocol import ticks_to_degrees
 from .widgets import (
     BatteryGauge,
     ClickableLabel,
@@ -282,16 +284,30 @@ class ManualControlPanel(QGroupBox):
     """
 
     gait_selected = Signal(str)
-    torque_toggle_requested = Signal()
+    joint_mode_requested = Signal(str)   # 'off' | 'damping' | 'on'
     jump_requested = Signal()
     greet_requested = Signal()
+    routine_play_requested = Signal(object)    # path
+    routine_teach_requested = Signal()          # an empty slot was clicked
+    routine_delete_requested = Signal(object)  # path
 
     # Full deflection, in the units each pad commands.
     STANCE_MAX_X = 25.0   # mm, matching operate.py's right-stick trim limits
     STANCE_MAX_Y = 15.0   # mm
     TILT_MAX = 20.0       # degrees of roll/pitch
 
-    TORQUE_COLORS = {True: '#1a7f37', False: '#b3262b'}
+    # Slider position 0/1/2 -> mode. Off/on keep the old Torque button's
+    # colours; damping reuses HOLD_COLOR - both are "this joint is soft",
+    # just for different reasons (hand-posed vs. teaching-in-progress).
+    JOINT_MODES = ('off', 'damping', 'on')
+    JOINT_MODE_LABELS = {'off': 'Off', 'damping': 'Damping', 'on': 'On'}
+    JOINT_MODE_COLORS = {'on': '#1a7f37', 'damping': '#8250df', 'off': '#b3262b'}
+
+    # How many saved-routine rows to reserve. A fixed number rather than a
+    # scrolling list, so the layout doesn't resize itself under the user as
+    # routines are taught - see the readout-width comment above for why that
+    # matters here. Raise this if it's ever too cramped.
+    ROUTINE_SLOTS = 4
 
     def __init__(self, parent=None):
         super().__init__("Manual Control", parent)
@@ -325,11 +341,48 @@ class ManualControlPanel(QGroupBox):
         self.gait_combo.setEnabled(False)   # nothing to choose until connected
         self.gait_combo.activated.connect(self._gait_chosen)
 
-        self.torque_button = QPushButton("Torque: —")
-        self.torque_button.setToolTip(
-            "Turn joint torque on or off. The gamepad's RB does the same "
-            "thing, so this stays in sync with whichever last changed it.")
-        self.torque_button.clicked.connect(self.torque_toggle_requested.emit)
+        # Off / Damping / On, one slider rather than a button - damping is a
+        # real third state (see Q8Bot.set_joint_mode()), not a toggle. Labels
+        # never change their text (only which one is bold/coloured), so
+        # unlike a button whose text changes, nothing here can resize the
+        # column around it - see the Stance/Tilt readout fix for what that
+        # bug looks like elsewhere in this panel.
+        self.joint_mode_slider = QSlider(Qt.Horizontal)
+        self.joint_mode_slider.setRange(0, len(self.JOINT_MODES) - 1)
+        self.joint_mode_slider.setSingleStep(1)
+        self.joint_mode_slider.setPageStep(1)
+        self.joint_mode_slider.setTickPosition(QSlider.TicksBelow)
+        self.joint_mode_slider.setTickInterval(1)
+        self.joint_mode_slider.setEnabled(False)   # nothing to set until connected
+        self.joint_mode_slider.setToolTip(
+            "Off: fully backdrivable, no holding force.\n"
+            "Damping: torqued but soft - holds a hand-posed joint without "
+            "fighting it.\n"
+            "On: normal full-stiffness control.")
+        self.joint_mode_slider.valueChanged.connect(self._joint_mode_slider_changed)
+
+        self.joint_mode_row_labels = {}
+        joint_mode_labels_row = QHBoxLayout()
+        for mode in self.JOINT_MODES:
+            label = QLabel(self.JOINT_MODE_LABELS[mode])
+            label.setAlignment(Qt.AlignCenter)
+            self.joint_mode_row_labels[mode] = label
+            joint_mode_labels_row.addWidget(label)
+
+        self.hold_pose_button = QPushButton("Hold Pose: OFF")
+        self.hold_pose_button.setCheckable(True)
+        self.hold_pose_button.setToolTip(
+            "Keep a pad wherever you drag it instead of springing back to "
+            "centre on release - for holding a pose, or teaching a routine "
+            "without needing to keep the mouse button down.")
+        self.hold_pose_button.toggled.connect(self._hold_pose_toggled)
+
+        # Hold Pose changes its own text - letting its natural width track
+        # whichever text it currently shows would resize the column it's in
+        # and shove the pads beside it sideways (the same bug the Stance/
+        # Tilt readouts had; same fix: measure the widest state up front).
+        self._lock_width_to_widest(self.hold_pose_button, [
+            (False, "Hold Pose: OFF"), (True, "Hold Pose: ON")])
 
         # One-shot scripted routines - the same jump/greet the gamepad's
         # left/top buttons trigger, just without a pad to hold one.
@@ -384,19 +437,86 @@ class ManualControlPanel(QGroupBox):
         # separate from the continuous pads to their left.
         actions_col = QVBoxLayout()
         actions_col.addStretch()
-        actions_col.addWidget(self.torque_button)
+        actions_col.addWidget(self.joint_mode_slider)
+        actions_col.addLayout(joint_mode_labels_row)
+        actions_col.addSpacing(8)
+        actions_col.addWidget(self.hold_pose_button)
         actions_col.addSpacing(12)
         actions_col.addWidget(self.jump_button)
         actions_col.addWidget(self.greet_button)
         actions_col.addStretch()
         grid.addLayout(actions_col, 0, 3, 4, 1)
 
+        # Reserved routine rows, below everything else and spanning the full
+        # width. Populated by set_routines() - an empty slot opens the teach
+        # dialog, a filled one plays that routine on click and has its own
+        # Delete button (an explicit button rather than a right-click menu,
+        # which nothing on screen hints exists - deleting a routine has to be
+        # discoverable, especially since it's the only way to free a slot
+        # once all ROUTINE_SLOTS are taken). Built once; set_routines() only
+        # ever relabels these, so the layout itself never resizes as
+        # routines are taught/deleted.
+        routines_heading = QLabel("Routines")
+        routines_heading.setAlignment(Qt.AlignCenter)
+        font = routines_heading.font()
+        font.setBold(True)
+        routines_heading.setFont(font)
+        grid.addWidget(routines_heading, 5, 0, 1, 4)
+
+        self.routine_buttons = []
+        self.routine_delete_buttons = []
+        for i in range(self.ROUTINE_SLOTS):
+            button = QPushButton()
+            button.setEnabled(False)
+            button.clicked.connect(
+                lambda _checked=False, index=i: self._routine_slot_clicked(index))
+
+            delete_button = QPushButton("✕")
+            delete_button.setFixedWidth(28)
+            delete_button.setToolTip("Delete this routine")
+            delete_button.setEnabled(False)
+            delete_button.clicked.connect(
+                lambda _checked=False, index=i: self._routine_delete_clicked(index))
+
+            row = QHBoxLayout()
+            row.addWidget(button, 1)
+            row.addWidget(delete_button)
+            grid.addLayout(row, 6 + i, 0, 1, 4)
+            self.routine_buttons.append(button)
+            self.routine_delete_buttons.append(delete_button)
+        self._routines = [None] * self.ROUTINE_SLOTS  # None = empty/teach slot
+
         grid.setHorizontalSpacing(28)
         grid.setColumnStretch(3, 1)   # pads sit left; space to the right
-        grid.setRowStretch(5, 1)      # and above the bottom edge
+        grid.setRowStretch(6 + self.ROUTINE_SLOTS, 1)   # above the bottom edge
         self._update_readouts()
-        self.set_torque(None)
-        self.set_routines_enabled(False)
+        self.set_joint_mode(None)
+        self.set_scripted_routines_enabled(False)
+        self.set_routines([])
+        self.set_saved_routines_enabled(False)
+
+    @staticmethod
+    def _lock_width_to_widest(button, states):
+        """
+        Fix `button`'s minimum width to whichever (checked, text) pair in
+        `states` - the states it will actually be shown in - needs the most
+        room, so switching between them later can't resize the column it
+        sits in. Signals are blocked while probing - toggling a checkable
+        button's checked state here would otherwise fire its real handler
+        (see hold_pose_button's toggled -> _hold_pose_toggled) as a side
+        effect of just measuring it.
+        """
+        blocked = button.blockSignals(True)
+        original_checked, original_text = button.isChecked(), button.text()
+        widest = 0
+        for checked, text in states:
+            button.setChecked(checked)
+            button.setText(text)
+            widest = max(widest, button.sizeHint().width())
+        button.setChecked(original_checked)
+        button.setText(original_text)
+        button.blockSignals(blocked)
+        button.setMinimumWidth(widest)
 
     #-------------------#
     # Gait selection    #
@@ -434,20 +554,51 @@ class ManualControlPanel(QGroupBox):
         if name:
             self.gait_selected.emit(name)
 
-    def set_torque(self, on):
+    def set_joint_mode(self, mode):
         """
-        Reflect the robot's actual torque state - it can change out from
-        under this button (the gamepad's RB toggles it too), so MainWindow
-        calls this on every poll rather than only after a click here.
-        `on=None` means unknown (no robot connected).
+        Reflect the robot's actual joint mode - it can change out from
+        under this slider (the gamepad's RB toggles plain on/off, and a
+        gait or scripted routine drops damping automatically), so
+        MainWindow calls this on every poll rather than only after a drag
+        here. `mode=None` means unknown (no robot connected).
         """
-        self.torque_button.setText(
-            "Torque: —" if on is None else f"Torque: {'ON' if on else 'OFF'}")
-        self.torque_button.setEnabled(on is not None)
-        color = self.TORQUE_COLORS.get(on)
-        self.torque_button.setStyleSheet(f"color: {color};" if color else "")
+        blocked = self.joint_mode_slider.blockSignals(True)
+        if mode is not None:
+            self.joint_mode_slider.setValue(self.JOINT_MODES.index(mode))
+        self.joint_mode_slider.setEnabled(mode is not None)
+        self.joint_mode_slider.blockSignals(blocked)
 
-    def set_routines_enabled(self, enabled):
+        for name, label in self.joint_mode_row_labels.items():
+            current = (name == mode)
+            font = label.font()
+            font.setBold(current)
+            label.setFont(font)
+            color = self.JOINT_MODE_COLORS.get(name) if current else None
+            label.setStyleSheet(f"color: {color};" if color else "")
+
+    def _joint_mode_slider_changed(self, value):
+        self.joint_mode_requested.emit(self.JOINT_MODES[value])
+
+    def _hold_pose_toggled(self, checked):
+        """
+        Purely local UI state - doesn't touch Q8Bot, so it needs no
+        connection and MainWindow doesn't have to know about it. Applies to
+        all three pads uniformly: released-but-held applies just as well to
+        "keep walking without holding the mouse down" as it does to posing.
+        """
+        for pad in (self.move_pad, self.stance_pad, self.tilt_pad):
+            pad.set_hold(checked)
+        self.hold_pose_button.setText(f"Hold Pose: {'ON' if checked else 'OFF'}")
+        # Solid fill, not just text colour: a checked QPushButton already
+        # gets its own background from the OS style (blue on Windows), which
+        # fights a text-only colour instead of blending with it. Setting the
+        # background explicitly replaces that with the same colour a pinned
+        # pad turns (JoystickPad.HOLD_COLOR), so the two read as one state.
+        self.hold_pose_button.setStyleSheet(
+            f"QPushButton {{ background-color: {JoystickPad.HOLD_COLOR.name()}; "
+            "color: white; }" if checked else "")
+
+    def set_scripted_routines_enabled(self, enabled):
         """
         Jump/Greet take the robot over for a few seconds - disabled while
         disconnected or while one is already running, same as the gamepad's
@@ -455,6 +606,64 @@ class ManualControlPanel(QGroupBox):
         """
         self.jump_button.setEnabled(enabled)
         self.greet_button.setEnabled(enabled)
+
+    #-------------------#
+    # Saved routines    #
+    #-------------------#
+
+    def set_routines(self, routines):
+        """
+        Fill the reserved rows from routine_store.list_routines() -
+        [(name, path), ...]. A row beyond what's saved shows as an empty
+        "+ Teach New Routine" slot. Safe to call repeatedly (MainWindow
+        calls this again after every save/delete); rebuilds the labels only,
+        never the row layout itself.
+
+        Extra saved routines beyond ROUTINE_SLOTS are silently not shown -
+        MainWindow logs that rather than this panel, since deciding whether
+        that's worth telling the user about isn't this widget's job.
+        """
+        self._routines = list(routines[:self.ROUTINE_SLOTS])
+        self._routines += [None] * (self.ROUTINE_SLOTS - len(self._routines))
+        for button, delete_button, entry in zip(
+                self.routine_buttons, self.routine_delete_buttons, self._routines):
+            if entry is None:
+                button.setText("+ Teach New Routine")
+                button.setToolTip(
+                    "Pose the robot by hand or with the pads, then save it "
+                    "here as a new routine.")
+                delete_button.setVisible(False)
+            else:
+                name, _path = entry
+                button.setText(name)
+                button.setToolTip(f"Play '{name}'.")
+                delete_button.setVisible(True)
+
+    def set_saved_routines_enabled(self, enabled):
+        """
+        Playing, deleting or teaching a routine all need a connected robot -
+        the empty "+ Teach" slots are gated the same as the filled ones
+        rather than always being clickable, since a click on any of them
+        eventually needs to talk to Q8Bot.
+        """
+        for button in self.routine_buttons:
+            button.setEnabled(enabled)
+        for i, delete_button in enumerate(self.routine_delete_buttons):
+            delete_button.setEnabled(enabled and self._routines[i] is not None)
+
+    def _routine_slot_clicked(self, index):
+        entry = self._routines[index]
+        if entry is None:
+            self.routine_teach_requested.emit()
+        else:
+            _name, path = entry
+            self.routine_play_requested.emit(path)
+
+    def _routine_delete_clicked(self, index):
+        entry = self._routines[index]
+        if entry is not None:
+            _name, path = entry
+            self.routine_delete_requested.emit(path)
 
     def set_can_turn(self, can_turn):
         """Lock the move pad to forward/back for a gait that cannot steer."""
@@ -556,11 +765,6 @@ class RobotInfoPanel(QGroupBox):
         # percentage, so that readout empties rather than showing a stale one.
         self.battery_voltage.setText("" if volts is None else f"{volts:.2f} V")
 
-    # Raw ticks are what the firmware reports; 4096 ticks per revolution on
-    # these servos, with the same zero offset q8Dynamixel uses.
-    TICKS_PER_REV = 4096
-    ZERO_OFFSET = 4096
-
     def set_telemetry(self, sample):
         """
         Fill the joint grid from one snapshot (see protocol.parse_telemetry),
@@ -572,7 +776,7 @@ class RobotInfoPanel(QGroupBox):
             return
 
         for i in range(self.JOINT_COUNT):
-            degrees = (sample['position'][i] - self.ZERO_OFFSET) * 360.0 / self.TICKS_PER_REV
+            degrees = ticks_to_degrees(sample['position'][i])
             self.joint_fields[("Position", i)].setText(f"{degrees:.1f}°")
             self.joint_fields[("Current", i)].setText(f"{sample['current'][i]} mA")
             self.joint_fields[("Temperature", i)].setText(f"{sample['temperature'][i]}°C")

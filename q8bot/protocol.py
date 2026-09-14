@@ -21,7 +21,7 @@ _CRC_LEN = 2
 class CmdType(IntEnum):
     """Host -> robot commands."""
     MOVE = 0x01
-    TORQUE_SET = 0x02
+    TORQUE_SET = 0x02  # {mode: uint8} 0=off, 1=on (full stiffness), 2=damping
     BATTERY_REQUEST = 0x03
     RECORD_SEND = 0x04     # retired - recording removed; do not reuse this id
     JUMP = 0x05
@@ -116,6 +116,21 @@ def parse_telemetry(payload: bytes):
         'current': values[8:16],
         'temperature': values[16:24],
     }
+
+
+# Matches q8Dynamixel.cpp's _deg2Dxl/_dxl2Deg exactly (_zeroOffset=4096,
+# _gearRatio=1) - so a degree value round-trips through a raw tick and back
+# to the same degree, and a tick read back from telemetry converts to
+# whatever angle move_all() would need to return the servo to that exact
+# position. That symmetry is what makes capturing a hand-posed pose and
+# replaying it through move_all() work at all (see Q8Bot.capture_pose()).
+ZERO_OFFSET = 4096
+TICKS_PER_REV = 4096
+
+
+def ticks_to_degrees(ticks):
+    """Raw Dynamixel present-position ticks -> degrees, move_all()'s units."""
+    return (ticks - ZERO_OFFSET) * 360.0 / TICKS_PER_REV
 
 
 def crc16_arc(data: bytes, crc: int = 0x0000) -> int:

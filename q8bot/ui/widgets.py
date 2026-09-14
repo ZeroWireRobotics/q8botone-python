@@ -200,7 +200,8 @@ class JoystickPad(QWidget):
 
     Springs back to centre when released, like the stick it's modelled on -
     so letting go returns the robot to its baseline rather than parking it at
-    whatever offset you last dragged to.
+    whatever offset you last dragged to. See set_hold() to turn that off and
+    hold a pose instead, without keeping the mouse button down.
 
     Reports both axes as -1.0..1.0 with up and right positive, clamped to the
     unit circle so a diagonal can't exceed full deflection on both at once.
@@ -211,6 +212,11 @@ class JoystickPad(QWidget):
     SIZE = 132
     KNOB_R = 13
     RETURN_MS = 130
+
+    # Distinct from the OS accent colour (used for a normal, spring-back
+    # knob) and from ManualControlPanel's green/red torque colours, so a
+    # held pad reads as its own third state at a glance.
+    HOLD_COLOR = QColor('#8250df')
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -226,6 +232,7 @@ class JoystickPad(QWidget):
         self._release_from = (0.0, 0.0)
         self._return = 0.0
         self._horizontal = True
+        self._hold = False   # see set_hold()
         self._animation = QPropertyAnimation(self, b"returnFraction", self)
         self._animation.setDuration(self.RETURN_MS)
         self._animation.setEasingCurve(QEasingCurve.OutCubic)
@@ -245,6 +252,23 @@ class JoystickPad(QWidget):
 
     def centre(self):
         self._set_value(0.0, 0.0)
+
+    def set_hold(self, hold):
+        """
+        When held, letting go leaves the knob wherever it was dragged
+        instead of springing back to centre - for holding a pose (teaching a
+        routine, or just parking the robot in a stance) without keeping the
+        mouse button down. Turning hold back off immediately springs back to
+        centre if the pad isn't at rest already, the same as a normal
+        release would.
+        """
+        if hold == self._hold:
+            return
+        self._hold = hold
+        if not hold and not self._dragging and (self._x, self._y) != (0.0, 0.0):
+            self._start_return()
+        else:
+            self.update()   # _start_return()'s animation repaints on its own
 
     def set_horizontal_enabled(self, enabled):
         """
@@ -294,6 +318,11 @@ class JoystickPad(QWidget):
         if not self._dragging:
             return
         self._dragging = False
+        if self._hold:
+            return   # stay right where it was let go
+        self._start_return()
+
+    def _start_return(self):
         self._release_from = (self._x, self._y)
         self._animation.stop()
         self._animation.setStartValue(1.0)
@@ -309,8 +338,11 @@ class JoystickPad(QWidget):
         # Blend the accent toward grey by hand when disabled. The palette's
         # own Disabled Highlight is no help here - on Windows it comes back
         # brighter than the Normal one, so the knob would stay vividly blue
-        # on a panel that's meant to look switched off.
-        accent = palette.color(QPalette.Normal, QPalette.Highlight)
+        # on a panel that's meant to look switched off. Coloured HOLD_COLOR
+        # for as long as hold is on, not only once dragged away from centre -
+        # the whole point is telling the user "this pad won't spring back"
+        # before they find out by letting go of it.
+        accent = self.HOLD_COLOR if self._hold else palette.color(QPalette.Normal, QPalette.Highlight)
         if not self.isEnabled():
             accent = _blend(accent, palette.color(QPalette.Window), 0.62)
 

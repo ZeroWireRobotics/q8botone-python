@@ -91,6 +91,19 @@ class q8_espnow:
         self.torque_on = False
         return True
 
+    def set_damping(self):
+        """
+        Keep torque on but at a much lower position gain (see firmware's
+        q8Dynamixel::DAMPING_GAIN) - a joint pushed away from its last
+        commanded goal yields instead of holding rigid. Q8Bot re-issues the
+        current pose as that goal continuously while this is active (see
+        Q8Bot.set_joint_mode()), so a hand-posed joint stays where it's put
+        rather than easing back toward wherever damping started.
+        """
+        self._send(CmdType.TORQUE_SET, bytes([2]))
+        self.torque_on = True
+        return True
+
     def check_battery(self):
         return self._send(CmdType.BATTERY_REQUEST)
 

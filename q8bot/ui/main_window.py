@@ -27,14 +27,16 @@ from PySide6.QtWidgets import (
     QApplication,
     QGridLayout,
     QMainWindow,
+    QMessageBox,
     QStatusBar,
     QWidget,
 )
 
+from .. import routine_store
 from ..control_config import get_joystick_direction, get_joystick_magnitude
 from ..espnow import q8_espnow
 from ..helpers import Q8Logger
-from ..robot import Q8Bot
+from ..robot import JUMP_BATTERY_THRESHOLD, JointMode, Q8Bot
 from .log_bridge import QueuedLogHandler
 from .panels import (
     ConnectionPanel,
@@ -42,6 +44,7 @@ from .panels import (
     ManualControlPanel,
     RobotInfoPanel,
 )
+from .teach_dialog import TeachRoutineDialog
 from .viewer import ViewerPanel
 from .widgets import StatusDot
 
@@ -89,7 +92,9 @@ class MainWindow(QMainWindow):
         self._last_request_at = 0.0
         self._last_reply_at = None   # None until the robot has ever answered
         self._shown_gait = None      # what the gait dropdown is currently showing
-        self._shown_torque = None    # what the torque button is currently showing
+        self._shown_joint_mode = None  # what the joint mode slider is currently showing
+        self._saved_routines = []    # [(name, path), ...] mirroring the reserved rows
+        self._teach_dialog = None    # the open TeachRoutineDialog, or None
 
         self.connection = ConnectionPanel(self._list_gamepads)
         self.console = DebugConsole()
@@ -122,10 +127,18 @@ class MainWindow(QMainWindow):
         self.connection.gamepad_disconnect_requested.connect(self._disconnect_gamepad)
         self.connection.mode_changed.connect(self._on_mode_changed)
         self.manual.gait_selected.connect(self._select_gait)
-        self.manual.torque_toggle_requested.connect(self._toggle_torque)
+        self.manual.joint_mode_requested.connect(self._joint_mode_requested)
         self.manual.jump_requested.connect(self._manual_jump)
         self.manual.greet_requested.connect(self._manual_greet)
+        self.manual.routine_play_requested.connect(self._play_routine)
+        self.manual.routine_teach_requested.connect(self._teach_routine)
+        self.manual.routine_delete_requested.connect(self._delete_routine)
         self.manual.set_available(self.connection.pc_mode)
+
+        # Routines are just files on disk - load them at startup rather than
+        # only on robot connect, so the rows are populated (if disabled)
+        # immediately instead of flashing empty-then-filled after Connect.
+        self._reload_routines()
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._poll)
@@ -159,10 +172,10 @@ class MainWindow(QMainWindow):
 
         # Torque on and into the stance, as operate.py does on startup - the
         # robot has to be holding itself up before any of this can drive it.
-        self.bot.set_torque(True)
+        self.bot.set_joint_mode(JointMode.ON)
         self.bot.stand(1000)
-        self._shown_torque = True
-        self.manual.set_torque(True)
+        self._shown_joint_mode = 'on'
+        self.manual.set_joint_mode('on')
         Q8Logger.info("Torque on, moving to stance.")
 
         # Telemetry runs whenever this window holds a robot. It's
@@ -173,9 +186,11 @@ class MainWindow(QMainWindow):
         self._shown_gait = self.bot.gait
         self.manual.set_gaits(self.bot.catalog, self._shown_gait)
         self.manual.set_can_turn(self.bot.can_turn)
-        self.manual.set_routines_enabled(True)
+        self.manual.set_scripted_routines_enabled(True)
+        self.manual.set_saved_routines_enabled(True)
 
     def _disconnect_robot(self):
+        self._close_teach_dialog()   # teaching needs a live robot
         if self.bot is not None:
             self.bot.close()
             self.bot = None
@@ -186,9 +201,10 @@ class MainWindow(QMainWindow):
         self.info.set_telemetry(None)
         self.manual.set_gaits([])
         self._shown_gait = None
-        self._shown_torque = None
-        self.manual.set_torque(None)
-        self.manual.set_routines_enabled(False)
+        self._shown_joint_mode = None
+        self.manual.set_joint_mode(None)
+        self.manual.set_scripted_routines_enabled(False)
+        self.manual.set_saved_routines_enabled(False)
         self._set_status("Not connected")
         Q8Logger.info("Disconnected.")
 
@@ -289,18 +305,30 @@ class MainWindow(QMainWindow):
             self.info.set_telemetry(None)
             self.manual.set_gaits([])
             self._shown_gait = None
-            self._shown_torque = None
-            self.manual.set_torque(None)
-            self.manual.set_routines_enabled(False)
+            self._shown_joint_mode = None
+            self.manual.set_joint_mode(None)
+            self.manual.set_scripted_routines_enabled(False)
+            self.manual.set_saved_routines_enabled(False)
+            self._close_teach_dialog()
             self._set_status("Connection lost")
             return
 
         self._poll_robot_liveness()
         self.info.set_telemetry(self.bot.telemetry)
-        self._poll_torque_button()
-        self.manual.set_routines_enabled(not self._routine_running())
+        self._poll_joint_mode()
+        self.manual.set_scripted_routines_enabled(not self._routine_running())
+        self.manual.set_saved_routines_enabled(self._routine_slots_available())
         self._poll_gamepad()
         self._poll_manual()
+
+    def _routine_slots_available(self):
+        """
+        Playing a saved routine or opening the teach dialog both need sole
+        control of the robot - blocked while any routine (Jump/Greet/a
+        preview) is already running, and while a teach session is already
+        open (one at a time is plenty).
+        """
+        return self._teach_dialog is None and not self._routine_running()
 
     #-------------------#
     # Manual control    #
@@ -318,6 +346,11 @@ class MainWindow(QMainWindow):
         """
         if not self.connection.pc_mode:
             return  # the pads only drive in PC mode
+        if self._routine_running():
+            # Jump/Greet/a routine preview hold Q8Bot's lock for seconds;
+            # idle()/set_stance() below would block this thread waiting for
+            # it - i.e. freeze the whole window - if called while one runs.
+            return
 
         # Keep the dropdown honest if the gait changed elsewhere - the
         # gamepad's switch_gait button cycles it too.
@@ -347,26 +380,51 @@ class MainWindow(QMainWindow):
             pitch=pitch * ManualControlPanel.TILT_MAX,
         )
 
-    def _toggle_torque(self):
+    def _joint_mode_requested(self, mode_str):
+        """
+        The slider was dragged. If the robot rejects it (DAMPING while a
+        gait is running, say - see Q8Bot.set_joint_mode()), re-sync to
+        whatever it's actually in rather than leaving the slider showing a
+        position that never took effect.
+        """
         if self.bot is None or not self.bot.connected:
             return
-        on = self.bot.set_torque(not self.bot.torque)
-        self._shown_torque = on
-        self.manual.set_torque(on)
-        Q8Logger.info(f"Torque {'ON' if on else 'OFF'}.")
+        if not self.bot.set_joint_mode(JointMode(mode_str)):
+            Q8Logger.warning(f"Could not switch to {mode_str} (a gait may be running).")
+        self._shown_joint_mode = self.bot.joint_mode.value
+        self.manual.set_joint_mode(self._shown_joint_mode)
+        Q8Logger.info(f"Joints: {self._shown_joint_mode}.")
 
-    def _poll_torque_button(self):
+    def _poll_joint_mode(self):
         """
-        Keep the button honest against the gamepad's RB, which toggles
-        torque too (see _poll_gamepad_actions) - whichever one last changed
-        it, both should show the same state.
+        Keep the slider honest against everything that can change joint
+        mode out from under it: the gamepad's RB (still plain on/off), and
+        Q8Bot's own tick thread dropping DAMPING back to full torque the
+        moment a gait starts or a scripted routine needs it (see
+        Q8Bot._tick()/_exit_damping()).
         """
-        if self.bot.torque != self._shown_torque:
-            self._shown_torque = self.bot.torque
-            self.manual.set_torque(self._shown_torque)
+        mode = self.bot.joint_mode.value
+        if mode != self._shown_joint_mode:
+            self._shown_joint_mode = mode
+            self.manual.set_joint_mode(mode)
 
     def _manual_jump(self):
         if self.bot is None or not self.bot.connected or self._routine_running():
+            return
+        self._try_jump()
+
+    def _try_jump(self):
+        """
+        Jump if the battery can support it, else skip it outright rather
+        than spinning up a worker thread just to sit through jump()'s
+        multi-second settle wait for what the firmware would silently drop
+        anyway (see Q8Bot.jump_allowed). Shared by the manual button and the
+        gamepad's jump button.
+        """
+        if not self.bot.jump_allowed:
+            Q8Logger.warning(
+                f"Jump skipped - battery at {self.bot.battery_percent}%, "
+                f"needs {JUMP_BATTERY_THRESHOLD}% or more.")
             return
         self._run_routine("Jump", self.bot.jump)
 
@@ -386,6 +444,118 @@ class MainWindow(QMainWindow):
         else:
             Q8Logger.error(f"Could not load {name}.")
             self.manual.show_gait(self.bot.gait)
+
+    #-------------------#
+    # Taught routines   #
+    #-------------------#
+
+    def _reload_routines(self):
+        """Re-scan disk and refresh the reserved rows - after save/delete too."""
+        routines = routine_store.list_routines()
+        self._saved_routines = routines
+        overflow = len(routines) - ManualControlPanel.ROUTINE_SLOTS
+        if overflow > 0:
+            Q8Logger.warning(
+                f"{overflow} saved routine(s) not shown - only the first "
+                f"{ManualControlPanel.ROUTINE_SLOTS} fit the reserved rows.")
+        self.manual.set_routines(routines)
+
+    def _play_routine(self, path):
+        if self.bot is None or not self.bot.connected or not self._routine_slots_available():
+            return
+        name = next((n for n, p in self._saved_routines if p == path), path.stem)
+        try:
+            waypoints = routine_store.load(path)
+        except Exception as exc:
+            Q8Logger.error(f"Could not load routine '{name}': {exc}")
+            return
+        self._run_routine(f"Routine: {name}", lambda: self.bot.play_routine(waypoints))
+
+    def _teach_routine(self):
+        if self.bot is None or not self.bot.connected or not self._routine_slots_available():
+            return
+
+        # Teaching means posing with the Stance/Body Tilt pads or the joint
+        # mode slider, both of which live in Manual Control and only work
+        # in PC mode - switch to it automatically rather than opening a
+        # dialog whose controls do nothing yet.
+        if not self.connection.pc_mode:
+            self.connection.mode_toggle.setChecked(True)
+
+        self.bot.idle()  # start from a known state, not mid-gait
+
+        # Damping holds a joint in place without fighting a hand trying to
+        # re-pose it - see Q8Bot.set_joint_mode(). It's also the only
+        # capture method that works with one mouse: sculpting a pose with
+        # the Stance/Body Tilt pads means holding the mouse button down on
+        # a pad, which leaves nothing free to click Capture with. The
+        # slider still works normally for anyone who'd rather do that.
+        self.bot.set_joint_mode(JointMode.DAMPING)
+        self._shown_joint_mode = 'damping'
+        self.manual.set_joint_mode('damping')
+
+        self.manual.set_scripted_routines_enabled(False)
+        self.manual.set_saved_routines_enabled(False)
+
+        self._teach_dialog = TeachRoutineDialog(
+            capture_pose=self.bot.capture_pose, run_preview=self._preview_routine,
+            parent=self)
+        self._teach_dialog.saved.connect(self._on_routine_saved)
+        self._teach_dialog.closed.connect(self._on_teach_closed)
+        self._teach_dialog.position_beside(self)
+        self._teach_dialog.show()
+        Q8Logger.info("Teaching a new routine - joints are damped for "
+                     "hand-posing, then Capture.")
+
+    def _preview_routine(self, waypoints):
+        """
+        Passed into TeachRoutineDialog as its run_preview callback. Reuses
+        the same worker-thread routine mechanism as Jump/Greet, and returns
+        the thread so the dialog can poll it the way MainWindow polls its
+        own routines.
+
+        Teaching leaves the joints in OFF or DAMPING (see _teach_routine) -
+        neither has the stiffness to actually play a routine back, so this
+        switches to full ON just long enough to run it, then restores
+        whichever mode was active before. Already at ON (nothing to
+        restore, e.g. torque was never touched)? Left alone either way.
+        """
+        previous_mode = self.bot.joint_mode
+
+        def play():
+            if previous_mode is not JointMode.ON:
+                self.bot.set_joint_mode(JointMode.ON)
+            self.bot.play_routine(waypoints)
+            if previous_mode is not JointMode.ON:
+                self.bot.set_joint_mode(previous_mode)
+
+        return self._run_routine("Preview", play)
+
+    def _on_routine_saved(self, name):
+        Q8Logger.info(f"Saved routine '{name}'.")
+        self._reload_routines()
+
+    def _on_teach_closed(self):
+        self._teach_dialog = None
+        available = self.bot is not None and self.bot.connected
+        if available:
+            self.bot.set_joint_mode(JointMode.ON)   # stand back up rather than stay soft/limp
+        self.manual.set_scripted_routines_enabled(available and not self._routine_running())
+        self.manual.set_saved_routines_enabled(available and self._routine_slots_available())
+
+    def _close_teach_dialog(self):
+        if self._teach_dialog is not None:
+            self._teach_dialog.close()   # fires closed -> _on_teach_closed
+
+    def _delete_routine(self, path):
+        name = next((n for n, p in self._saved_routines if p == path), path.stem)
+        if QMessageBox.question(
+                self, "Delete Routine", f"Delete '{name}'? This can't be undone."
+        ) != QMessageBox.Yes:
+            return
+        routine_store.delete(path)
+        Q8Logger.info(f"Deleted routine '{name}'.")
+        self._reload_routines()
 
     #-------------------#
     # Gamepad control   #
@@ -430,7 +600,7 @@ class MainWindow(QMainWindow):
         elif self._pressed('battery'):
             self.bot.request_battery()
         elif self._pressed('jump'):
-            self._run_routine("Jump", self.bot.jump)
+            self._try_jump()
         elif self._pressed('greet'):
             self._run_routine("Greet", self.bot.greet)
         elif self._trigger_pressed('trigger_right'):
@@ -462,15 +632,21 @@ class MainWindow(QMainWindow):
 
     def _run_routine(self, label, call):
         """
-        Jump, greet and shoot block for seconds and hold Q8Bot's lock, so they
-        run on a worker rather than freezing the window. Input is ignored until
-        the routine finishes (see _poll_gamepad).
+        Jump, greet, shoot, and now taught-routine playback all block for
+        seconds and hold Q8Bot's lock, so they run on a worker rather than
+        freezing the window. Input is ignored until the routine finishes
+        (see _poll_gamepad/_poll_manual and _routine_slots_available).
+
+        Returns the Thread, so a caller that needs to know when it's done
+        (the teach dialog, polling its own preview) can watch is_alive()
+        the same way this class polls Q8Bot's state elsewhere.
         """
         Q8Logger.info(f"{label}...")
         self.bot.idle()
         self._routine = threading.Thread(target=call, name=f'q8bot-{label.lower()}',
                                          daemon=True)
         self._routine.start()
+        return self._routine
 
     def _poll_robot_liveness(self):
         now = time.monotonic()
@@ -507,6 +683,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self._timer.stop()
+        self._close_teach_dialog()
         if self.bot is not None:
             self.bot.close()
             self.bot = None

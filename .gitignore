@@ -1,4 +1,7 @@
 # Custom files to be ignored
+# User-taught routines (see routine_store.py) - these are per-robot data the
+# user builds through the GUI, not code, so they don't belong in commits.
+q8bot/routines/
 /DynamixelSDK/
 docs/*.SLDPRT
 docs/*.SLDASM

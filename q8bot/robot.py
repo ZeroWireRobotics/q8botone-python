@@ -43,6 +43,7 @@ from .protocol import (
     ReplyType,
     parse_battery,
     parse_telemetry,
+    ticks_to_degrees,
 )
 
 # Q8bot leg configuration
@@ -94,12 +95,43 @@ DEFAULT_TELEMETRY_HZ = 0
 # routine, a busy GUI) resumes smoothly instead of flinging the legs.
 MAX_STREAM_CATCHUP = 4
 
+# Fallback timing for a taught waypoint that doesn't specify its own (see
+# play_routine()) - routine_store stamps every newly captured waypoint with
+# these explicitly, so this only matters against a hand-edited routine file.
+DEFAULT_ROUTINE_DURATION_MS = 1000  # time move_all() takes to reach the pose
+DEFAULT_ROUTINE_HOLD_S = 0.0        # pause after arriving, before the next
+
+# Matches firmware/q8bot_robot/src/main.cpp's jumpEnabledNow gate (pct >= 50).
+# The robot enforces this itself regardless - a raw JUMP command below the
+# threshold is silently dropped, no reply either way - so this only exists to
+# let a host skip jump()'s multi-second settle wait for a jump that was never
+# going to happen. Keep in sync if the firmware threshold ever changes.
+JUMP_BATTERY_THRESHOLD = 50
+
+# How far (degrees) a joint has to move from _damping_tick()'s last anchor
+# before it's treated as a real hand move rather than present-position sensor
+# noise. Re-anchoring on every sample (no deadband) was actively
+# counterproductive: it reset the position error to ~0 before DAMPING_GAIN's
+# already-low P-term ever built up real restoring torque, so a leg crept
+# slowly downward under gravity instead of settling, and ordinary read noise
+# made a perfectly still joint jitter as the goal ping-ponged by a degree or
+# two every sample. Tune this if real hand movement ever gets mistaken for
+# noise (raise it) or a held pose still creeps/jitters (lower it).
+DAMPING_DEADBAND_DEG = 3.0
+
 
 class Mode(Enum):
     """What the robot is currently being told to do."""
     IDLE = 'idle'
     NATIVE = 'native'   # robot is running a gait from its own tables
     STREAM = 'stream'   # host is sending one frame per tick
+
+
+class JointMode(Enum):
+    """See Q8Bot.set_joint_mode()."""
+    OFF = 'off'         # fully backdrivable, no holding force
+    ON = 'on'           # normal full-stiffness position control
+    DAMPING = 'damping'  # torqued but soft - holds a hand-posed joint without fighting it
 
 
 def selectable_gaits(gaits=GAITS):
@@ -173,6 +205,9 @@ class Q8Bot:
         self._telemetry_last_request = 0.0
         self._pos_x = 0.0
         self._pos_y = 0.0
+        self._damping = False          # see set_joint_mode()/_damping_tick()
+        self._damping_last_echo = 0.0
+        self._damping_anchor = None    # last pose _damping_tick() committed as the goal
         self._connected = True
         self._last_error = None
 
@@ -278,6 +313,13 @@ class Q8Bot:
     @property
     def torque(self):
         return self.link.torque_on
+
+    @property
+    def joint_mode(self):
+        """Current JointMode - OFF/ON/DAMPING, derived from live state."""
+        if self._damping:
+            return JointMode.DAMPING
+        return JointMode.ON if self.torque else JointMode.OFF
 
     #-------------------#
     # Movement          #
@@ -456,12 +498,57 @@ class Q8Bot:
     def set_torque(self, on):
         """Enable/disable motor torque. Enabling settles onto the stance."""
         with self._lock:
+            # Plain on/off always supersedes damping - otherwise a direct
+            # caller (the gamepad's RB, say) would leave _damping_tick()
+            # still echoing poses at a robot it just told to torque off.
+            self._damping = False
             if on:
                 self._guard(self.link.enable_torque)
                 self.stand(500)
             else:
                 self._guard(self.link.disable_torque)
             return on
+
+    @_needs_link
+    def set_joint_mode(self, mode):
+        """
+        Put the joints in one of three states - see JointMode. OFF/ON just
+        delegate to set_torque(); DAMPING is new: still torqued, but at a
+        much lower position gain (firmware's DAMPING_GAIN) than normal
+        moves use, with the last known pose continuously re-issued as the
+        goal by the background thread (_damping_tick()) - so a hand can
+        push a joint into a new pose against soft resistance and it stays
+        there, rather than a fixed low-gain target pulling it back to
+        wherever damping started.
+
+        DAMPING is idle-only, like set_stance()/capture_pose() - a running
+        gait owns the legs otherwise - and needs telemetry_hz > 0 to have
+        anything fresh to re-anchor to (the GUI already sets this whenever
+        connected).
+
+        Returns:
+            bool: False if DAMPING was requested while not idle, or the
+            command failed to send.
+        """
+        if mode is not JointMode.DAMPING:
+            return self.set_torque(mode is JointMode.ON)
+        with self._lock:
+            if self._mode is not Mode.IDLE:
+                return False
+            self._damping = True
+            self._damping_last_echo = 0.0  # sample on the very next tick
+            self._damping_anchor = None    # ...and anchor unconditionally there
+            return self._guard(self.link.set_damping)
+
+    def _exit_damping(self):
+        """
+        Scripted routines and gaits need full stiffness - drop out of
+        damping first if it was active, restoring normal gain along with
+        it (see q8Dynamixel::setJointMode's mode==1 branch).
+        """
+        if self._damping:
+            self._damping = False
+            self._guard(self.link.enable_torque)
 
     @_needs_link
     def set_led_brightness(self, brightness):
@@ -498,6 +585,33 @@ class Q8Bot:
             return self._battery_volts
 
     @property
+    def battery_percent(self):
+        """
+        Latest known battery percentage, or None before the first reply.
+        Latest-value rather than take-once like take_battery_reading() -
+        same reasoning as battery_volts: for "what do we know right now"
+        rather than "did a new one just arrive".
+        """
+        with self._reply_lock:
+            return self._battery_pct
+
+    @property
+    def jump_allowed(self):
+        """
+        Best guess at whether jump() will actually jump, from the last known
+        battery reading. True when nothing is known yet, so this never
+        preemptively refuses a jump the firmware might well allow - only
+        once a reading has actually come in under JUMP_BATTERY_THRESHOLD
+        does this go False.
+
+        A front end can check this before running jump() on a worker thread,
+        to skip the wait entirely instead of discovering the no-op only
+        after paying for it.
+        """
+        percent = self.battery_percent
+        return percent is None or percent >= JUMP_BATTERY_THRESHOLD
+
+    @property
     def telemetry_hz(self):
         """How often joint snapshots are requested. 0 disables them."""
         return self._telemetry_hz
@@ -530,8 +644,20 @@ class Q8Bot:
 
     @_needs_link
     def jump(self, settle=5.0):
+        """
+        Skips the jump - and the multi-second settle wait - if jump_allowed
+        is False: the firmware drops CmdType.JUMP outright below
+        JUMP_BATTERY_THRESHOLD, so pressing ahead here would just block
+        whichever thread called this for `settle` seconds for nothing.
+
+        Returns:
+            bool: True if the jump was actually attempted, False if skipped.
+        """
         with self._lock:
+            if not self.jump_allowed:
+                return False
             self.idle()
+            self._exit_damping()  # needs full stiffness, not a soft hold
             self._guard(self.link.send_jump)
             time.sleep(settle)
             # A jump can brown out the robot's MCU. If it reset, torque comes
@@ -539,11 +665,13 @@ class Q8Bot:
             # the pre-jump state still holds.
             self._guard(self.link.enable_torque)
             self.stand(500)
+            return True
 
     @_needs_link
     def greet(self):
         with self._lock:
             self.idle()
+            self._exit_damping()  # needs full stiffness, not a soft hold
             self._guard(routine_generator.greet, self.link)
             self.stand(1000)
 
@@ -551,6 +679,7 @@ class Q8Bot:
     def show_range(self):
         with self._lock:
             self.idle()
+            self._exit_damping()
             self._guard(routine_generator.show_range, self.link)
             self.stand(1000)
 
@@ -559,8 +688,65 @@ class Q8Bot:
         """on_kick: optional callable fired as the kick starts (see routine_generator)."""
         with self._lock:
             self.idle()
+            self._exit_damping()
             self._guard(routine_generator.shoot, self.link, on_kick)
             self.stand(500)
+
+    #-------------------#
+    # Taught routines   #
+    #-------------------#
+    # A taught routine is a list of waypoints in the same shape
+    # routine_generator's hardcoded via-points use internally -
+    # {'angles': [8 degrees], 'duration_ms', 'hold_s'} - except the angles
+    # come from capture_pose() instead of a developer's guesswork. Naming,
+    # saving and listing them lives in routine_store.py; Q8Bot only knows how
+    # to read one pose and play one list back, the same split
+    # routine_generator.py already has from the robot session itself.
+
+    def capture_pose(self):
+        """
+        The robot's current joint angles, in move_all()'s degrees - read from
+        the latest telemetry snapshot rather than commanded state, so this
+        reflects wherever the robot actually is: hand-posed with torque off,
+        or sculpted with the Stance/Body Tilt pads with torque on. Either
+        way, handing the result straight to move_all() (or play_routine())
+        returns the servos to exactly this pose.
+
+        Returns:
+            list[float] of 8 degrees, or None if no telemetry has arrived
+            yet - telemetry_hz must be set above 0 first (see that property).
+        """
+        if not self._connected:
+            return None
+        sample = self.telemetry
+        if sample is None:
+            return None
+        return [ticks_to_degrees(t) for t in sample['position']]
+
+    @_needs_link
+    def play_routine(self, waypoints):
+        """
+        Play back a taught routine - a list of waypoints as capture_pose()
+        and routine_store.load() produce them. Blocks for the length of the
+        routine and holds the lock, exactly like jump()/greet() do, so
+        nothing else drives the robot mid-sequence.
+
+        Returns:
+            bool: False if a waypoint failed to send (e.g. the link died
+            partway through) - the routine stops there rather than pressing
+            on into a longer failure.
+        """
+        with self._lock:
+            self.idle()
+            self._exit_damping()  # needs full stiffness, not a soft hold
+            for waypoint in waypoints:
+                duration_ms = waypoint.get('duration_ms', DEFAULT_ROUTINE_DURATION_MS)
+                hold_s = waypoint.get('hold_s', DEFAULT_ROUTINE_HOLD_S)
+                if not self._guard(self.link.move_all, waypoint['angles'], duration_ms):
+                    return False
+                time.sleep(hold_s)
+            self.stand(500)
+            return True
 
     #-------------------#
     # Lifecycle         #
@@ -670,6 +856,13 @@ class Q8Bot:
     def _tick(self):
         """One pass of the background thread."""
         with self._lock:
+            if self._damping and self._mode is not Mode.IDLE:
+                # A gait started (e.g. the move pad) while damping was
+                # active - damping is idle-only, and a gait needs full
+                # stiffness to actually walk, so drop back to full torque
+                # rather than let a low-gain leg try to plant a footfall.
+                self._exit_damping()
+
             if self._mode is Mode.STREAM and self._stream_manager is not None:
                 self._stream_tick()
             elif self._mode is Mode.NATIVE and self._native_cmd is not None:
@@ -677,9 +870,51 @@ class Q8Bot:
                 if now - self._native_last_sent >= NATIVE_GAIT_RESEND_INTERVAL:
                     self._guard(self.link.run_gait, *self._native_cmd)
                     self._native_last_sent = now
+            elif self._damping:
+                self._damping_tick()
 
             self._request_telemetry_if_due()
             self._drain_replies()
+
+    def _damping_tick(self):
+        """
+        While damping is on, re-anchors the goal position to wherever a
+        joint actually is - but only once it's moved more than
+        DAMPING_DEADBAND_DEG from the last anchor, not on every fresh
+        telemetry sample. A fixed low-gain target would just pull a
+        hand-posed joint back toward wherever damping started; re-anchoring
+        past a deadband is what makes it feel soft to push and then hold
+        still once released, without either of the failure modes a naive
+        "echo every sample" version has: re-anchoring continuously erases
+        the position error before DAMPING_GAIN's low P-term ever builds up
+        real restoring torque (a leg creeps downward under gravity instead
+        of settling), and it treats ordinary present-position sensor noise
+        as "the user moved it" (a perfectly still joint jitters as the goal
+        ping-pongs by a degree or two every sample).
+
+        Throttled to telemetry_hz's own cadence - no point checking for
+        movement between fresh samples - and does nothing if telemetry
+        isn't flowing (see set_joint_mode()'s note on needing
+        telemetry_hz > 0).
+        """
+        if self._telemetry_hz <= 0:
+            return
+        now = time.monotonic()
+        if now - self._damping_last_echo < 1.0 / self._telemetry_hz:
+            return
+        sample = self.telemetry
+        if sample is None:
+            return
+        self._damping_last_echo = now
+        pose = [ticks_to_degrees(t) for t in sample['position']]
+
+        if self._damping_anchor is not None:
+            moved = max(abs(a - b) for a, b in zip(pose, self._damping_anchor))
+            if moved < DAMPING_DEADBAND_DEG:
+                return  # within noise/droop tolerance - leave the anchor alone
+
+        self._damping_anchor = pose
+        self._guard(self.link.move_all, pose, 0)
 
     def _stream_tick(self):
         """
