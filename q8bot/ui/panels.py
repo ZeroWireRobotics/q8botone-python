@@ -22,12 +22,17 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
-    QSlider,
     QVBoxLayout,
 )
 
 from ..helpers import XiaoPortFinder
-from .widgets import BatteryGauge, ClickableLabel, StatusDot, ToggleSwitch
+from .widgets import (
+    BatteryGauge,
+    ClickableLabel,
+    JoystickPad,
+    StatusDot,
+    ToggleSwitch,
+)
 
 # Manual Control and Robot Information sit side by side and their Joint 1-8
 # rows are meant to read across the gap, so both grids are pinned to the same
@@ -144,6 +149,7 @@ class ConnectionPanel(QGroupBox):
         self.gamepad_combo.repopulate()
         self._update_buttons()
         self._paint_mode()
+        self._update_mode_lock()
 
     def _robot_ports(self):
         ports = XiaoPortFinder.list_all()
@@ -207,6 +213,19 @@ class ConnectionPanel(QGroupBox):
         self.gamepad_button.setEnabled(True)
         self.gamepad_combo.setEnabled(not connected)
         self._update_buttons()
+        self._update_mode_lock()
+
+    def _update_mode_lock(self):
+        """
+        Xbox mode is meaningless with nothing to drive it - lock the toggle
+        to PC mode until a gamepad is actually connected. PC mode itself
+        stays reachable either way (there's nothing to lock it against).
+        """
+        self.mode_toggle.setEnabled(self._gamepad_connected)
+        self.xbox_label.setEnabled(self._gamepad_connected)
+        tooltip = "" if self._gamepad_connected else "Connect a gamepad first."
+        self.mode_toggle.setToolTip(tooltip)
+        self.xbox_label.setToolTip(tooltip)
 
     @property
     def pc_mode(self):
@@ -247,61 +266,217 @@ class DebugConsole(QGroupBox):
 
 class ManualControlPanel(QGroupBox):
     """
-    Body pose and per-joint sliders. Live and draggable in PC mode, greyed
-    out in Xbox mode - but nothing is wired to the robot yet, so moving one
-    changes nothing (see the panel tooltip).
+    Three thumbstick-style pads - walk, stance offset, body tilt - plus the
+    gait selector, since which gait is loaded changes what the move pad can
+    do. Draggable in PC mode, greyed out in Xbox mode.
 
-    Ranges are the ones these will eventually mean, so wiring them up later
-    doesn't move every knob: degrees for roll/pitch and the joints, mm for
-    the X/Y stance offsets (matching operate.py's stance trim limits).
+    All three drive the robot. Tilt works by extending the legs on one side
+    and retracting the other; see Q8Bot.set_stance() and the leg-spacing
+    constants it scales by.
+
+    There are no per-joint sliders. Each leg is a five-bar linkage whose two
+    motors are mechanically coupled, so driving one joint while the other sits
+    still bypasses the IK that keeps every commanded pose reachable, and can
+    push the linkage into a hard stop with the servo still applying torque.
+    Everything here goes through the solver instead.
     """
 
-    JOINT_COUNT = 8
-    POSE_RANGES = {           # name: (minimum, maximum, initial)
-        'Roll': (-30, 30, 0),
-        'Pitch': (-30, 30, 0),
-        'X': (-25, 25, 0),
-        'Y': (-15, 15, 0),
-    }
-    JOINT_RANGE = (-90, 270, 90)
+    gait_selected = Signal(str)
+    torque_toggle_requested = Signal()
+    jump_requested = Signal()
+    greet_requested = Signal()
+
+    # Full deflection, in the units each pad commands.
+    STANCE_MAX_X = 25.0   # mm, matching operate.py's right-stick trim limits
+    STANCE_MAX_Y = 15.0   # mm
+    TILT_MAX = 20.0       # degrees of roll/pitch
+
+    TORQUE_COLORS = {True: '#1a7f37', False: '#b3262b'}
 
     def __init__(self, parent=None):
         super().__init__("Manual Control", parent)
-        self.setToolTip("Not wired to the robot yet - the sliders move but "
-                        "nothing is sent.")
+
+        self.move_pad = JoystickPad()
+        self.move_pad.setToolTip("Drag to walk; release to stop. Push further "
+                                 "to go faster.")
+        self.stance_pad = JoystickPad()
+        self.stance_pad.setToolTip("Drag to shift the standing pose; release "
+                                   "to return to the baseline. Idle only.")
+        self.tilt_pad = JoystickPad()
+        self.tilt_pad.setToolTip("Drag to tilt the body; release to level "
+                                 "off. Idle only.")
+
+        self.stance_readout = QLabel()
+        self.tilt_readout = QLabel()
+        # Fixed width, sized for the widest string each can ever show (both
+        # values at max magnitude). Otherwise the readout's natural width
+        # tracks its text - crossing from one digit to two (9.9 -> 10.0)
+        # widens the label, which widens the grid column, which re-centres
+        # the pad above it: the pad visibly jumps sideways while dragging.
+        for label, worst_case in (
+            (self.stance_readout,
+             f"X {-self.STANCE_MAX_X:+.1f} mm    Y {-self.STANCE_MAX_Y:+.1f} mm"),
+            (self.tilt_readout,
+             f"Roll {-self.TILT_MAX:+.1f}°    Pitch {-self.TILT_MAX:+.1f}°"),
+        ):
+            label.setFixedWidth(label.fontMetrics().horizontalAdvance(worst_case) + 4)
+
+        self.gait_combo = QComboBox()
+        self.gait_combo.setEnabled(False)   # nothing to choose until connected
+        self.gait_combo.activated.connect(self._gait_chosen)
+
+        self.torque_button = QPushButton("Torque: —")
+        self.torque_button.setToolTip(
+            "Turn joint torque on or off. The gamepad's RB does the same "
+            "thing, so this stays in sync with whichever last changed it.")
+        self.torque_button.clicked.connect(self.torque_toggle_requested.emit)
+
+        # One-shot scripted routines - the same jump/greet the gamepad's
+        # left/top buttons trigger, just without a pad to hold one.
+        self.jump_button = QPushButton("Jump")
+        self.jump_button.setToolTip("Run the jump routine. Takes a few seconds "
+                                    "and holds the robot until it finishes.")
+        self.jump_button.clicked.connect(self.jump_requested.emit)
+
+        self.greet_button = QPushButton("Greet")
+        self.greet_button.setToolTip("Run the greet routine. Takes a few seconds "
+                                     "and holds the robot until it finishes.")
+        self.greet_button.clicked.connect(self.greet_requested.emit)
+
+        for pad, readout in ((self.stance_pad, self.stance_readout),
+                             (self.tilt_pad, self.tilt_readout)):
+            readout.setAlignment(Qt.AlignCenter)
+            pad.moved.connect(self._update_readouts)
 
         grid = QGridLayout(self)
-        self.pose_sliders = {}
-        self.joint_sliders = []
+        for column, (title, pad, readout, hint) in enumerate((
+            ("Move", self.move_pad, None, "Direction / speed"),
+            ("Stance", self.stance_pad, self.stance_readout, "X / Y offset"),
+            ("Body Tilt", self.tilt_pad, self.tilt_readout, "Roll / Pitch"),
+        )):
+            heading = QLabel(title)
+            heading.setAlignment(Qt.AlignCenter)
+            font = heading.font()
+            font.setBold(True)
+            heading.setFont(font)
 
-        for row, (left, right) in enumerate((("Roll", "X"), ("Pitch", "Y"))):
-            for col, name in ((0, left), (2, right)):
-                grid.addWidget(QLabel(name), row, col)
-                grid.addWidget(self._make_slider(name), row, col + 1)
+            subtitle = QLabel(hint)
+            subtitle.setAlignment(Qt.AlignCenter)
 
-        for index in range(self.JOINT_COUNT):
-            row = 2 + index
-            grid.addWidget(QLabel(f"Joint {index + 1}"), row, 0)
-            slider = QSlider(Qt.Horizontal)
-            low, high, start = self.JOINT_RANGE
-            slider.setRange(low, high)
-            slider.setValue(start)
-            self.joint_sliders.append(slider)
-            grid.addWidget(slider, row, 1, 1, 3)
+            grid.addWidget(heading, 0, column)
+            grid.addWidget(subtitle, 1, column)
+            grid.addWidget(pad, 2, column, Qt.AlignCenter)
+            if readout is not None:
+                grid.addWidget(readout, 3, column)
 
-        grid.setColumnStretch(1, 1)
-        grid.setColumnStretch(3, 1)
-        for row in range(2 + self.JOINT_COUNT):
-            grid.setRowMinimumHeight(row, PANEL_ROW_HEIGHT)
-        grid.setRowStretch(2 + self.JOINT_COUNT, 1)  # keep rows packed to the top
+        # Row 3, flush with the Stance/Tilt readouts beside it - under the
+        # move pad, because the gait is what decides where that pad can go
+        # (a gait that can't turn locks its left/right axis).
+        gait_row = QHBoxLayout()
+        gait_row.addWidget(QLabel("Gait"))
+        gait_row.addWidget(self.gait_combo, 1)
+        grid.addLayout(gait_row, 3, 0)
 
-    def _make_slider(self, name):
-        low, high, start = self.POSE_RANGES[name]
-        slider = QSlider(Qt.Horizontal)
-        slider.setRange(low, high)
-        slider.setValue(start)
-        self.pose_sliders[name] = slider
-        return slider
+        # Column 3 is the stretch space to the right of the three pads (see
+        # setColumnStretch below) - the only real "empty space" in this
+        # layout, and not tied to any one pad's readout. Stacked rather than
+        # spread across the row so they read as one group of one-off actions,
+        # separate from the continuous pads to their left.
+        actions_col = QVBoxLayout()
+        actions_col.addStretch()
+        actions_col.addWidget(self.torque_button)
+        actions_col.addSpacing(12)
+        actions_col.addWidget(self.jump_button)
+        actions_col.addWidget(self.greet_button)
+        actions_col.addStretch()
+        grid.addLayout(actions_col, 0, 3, 4, 1)
+
+        grid.setHorizontalSpacing(28)
+        grid.setColumnStretch(3, 1)   # pads sit left; space to the right
+        grid.setRowStretch(5, 1)      # and above the bottom edge
+        self._update_readouts()
+        self.set_torque(None)
+        self.set_routines_enabled(False)
+
+    #-------------------#
+    # Gait selection    #
+    #-------------------#
+
+    def set_gaits(self, catalog, current=None):
+        """
+        Fill the dropdown from Q8Bot.catalog. Safe to call repeatedly - it
+        rebuilds without emitting, so following the robot's own gait changes
+        (the gamepad cycles them too) can't feed back into a command.
+        """
+        self.gait_combo.blockSignals(True)
+        self.gait_combo.clear()
+        for info in catalog:
+            self.gait_combo.addItem(info.label, info.name)
+            self.gait_combo.setItemData(self.gait_combo.count() - 1,
+                                        info.description, Qt.ToolTipRole)
+        self.gait_combo.setEnabled(bool(catalog))
+        self.show_gait(current)
+        self.gait_combo.blockSignals(False)
+
+    def show_gait(self, name):
+        """Point the dropdown at `name` without emitting a selection."""
+        blocked = self.gait_combo.signalsBlocked()
+        self.gait_combo.blockSignals(True)
+        index = self.gait_combo.findData(name)
+        if index >= 0:
+            self.gait_combo.setCurrentIndex(index)
+            self.gait_combo.setToolTip(
+                self.gait_combo.itemData(index, Qt.ToolTipRole) or "")
+        self.gait_combo.blockSignals(blocked)
+
+    def _gait_chosen(self, index):
+        name = self.gait_combo.itemData(index)
+        if name:
+            self.gait_selected.emit(name)
+
+    def set_torque(self, on):
+        """
+        Reflect the robot's actual torque state - it can change out from
+        under this button (the gamepad's RB toggles it too), so MainWindow
+        calls this on every poll rather than only after a click here.
+        `on=None` means unknown (no robot connected).
+        """
+        self.torque_button.setText(
+            "Torque: —" if on is None else f"Torque: {'ON' if on else 'OFF'}")
+        self.torque_button.setEnabled(on is not None)
+        color = self.TORQUE_COLORS.get(on)
+        self.torque_button.setStyleSheet(f"color: {color};" if color else "")
+
+    def set_routines_enabled(self, enabled):
+        """
+        Jump/Greet take the robot over for a few seconds - disabled while
+        disconnected or while one is already running, same as the gamepad's
+        equivalent buttons are simply ignored during that window.
+        """
+        self.jump_button.setEnabled(enabled)
+        self.greet_button.setEnabled(enabled)
+
+    def set_can_turn(self, can_turn):
+        """Lock the move pad to forward/back for a gait that cannot steer."""
+        self.move_pad.set_horizontal_enabled(can_turn)
+        self.move_pad.setToolTip(
+            "Drag to walk; release to stop. Push further to go faster."
+            if can_turn else
+            "This gait only walks forward and back, so the pad is locked to "
+            "the vertical axis.")
+
+    #-------------------#
+    # Readouts          #
+    #-------------------#
+
+    def _update_readouts(self, *_args):
+        x, y = self.stance_pad.value()
+        self.stance_readout.setText(
+            f"X {x * self.STANCE_MAX_X:+.1f} mm    Y {y * self.STANCE_MAX_Y:+.1f} mm")
+
+        roll, pitch = self.tilt_pad.value()
+        self.tilt_readout.setText(
+            f"Roll {roll * self.TILT_MAX:+.1f}°    Pitch {pitch * self.TILT_MAX:+.1f}°")
 
     def set_available(self, available):
         """Draggable in PC mode, greyed out in Xbox mode, per the mockup."""

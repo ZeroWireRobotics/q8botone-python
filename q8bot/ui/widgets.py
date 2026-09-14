@@ -8,13 +8,17 @@ reads as "on/off", which is the wrong idea for a control that picks between
 two equally-valid named modes.
 '''
 
+import math
+
 from PySide6.QtCore import (
     Property,
     QEasingCurve,
     QPropertyAnimation,
+    QPointF,
     QRectF,
     QSize,
     Qt,
+    Signal,
 )
 from PySide6.QtGui import QColor, QPainter, QPalette
 from PySide6.QtWidgets import QAbstractButton, QLabel, QSizePolicy, QWidget
@@ -188,6 +192,162 @@ class StatusDot(QWidget):
         painter.setPen(_blend(color, QColor('#000000'), 0.35))
         painter.setBrush(color)
         painter.drawEllipse(QRectF(centre, centre, self.DIAMETER, self.DIAMETER))
+
+
+class JoystickPad(QWidget):
+    """
+    A two-axis pad you drag with the mouse, shaped like a thumbstick.
+
+    Springs back to centre when released, like the stick it's modelled on -
+    so letting go returns the robot to its baseline rather than parking it at
+    whatever offset you last dragged to.
+
+    Reports both axes as -1.0..1.0 with up and right positive, clamped to the
+    unit circle so a diagonal can't exceed full deflection on both at once.
+    """
+
+    moved = Signal(float, float)   # x, y in -1.0..1.0
+
+    SIZE = 132
+    KNOB_R = 13
+    RETURN_MS = 130
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(self.SIZE, self.SIZE)
+        self.setCursor(Qt.PointingHandCursor)
+        self._x = 0.0
+        self._y = 0.0
+        self._dragging = False
+
+        # Animated rather than snapped, so the robot eases back to baseline
+        # instead of being handed a step change. Interpolates from wherever
+        # the knob was released down to zero.
+        self._release_from = (0.0, 0.0)
+        self._return = 0.0
+        self._horizontal = True
+        self._animation = QPropertyAnimation(self, b"returnFraction", self)
+        self._animation.setDuration(self.RETURN_MS)
+        self._animation.setEasingCurve(QEasingCurve.OutCubic)
+
+    def _get_return(self):
+        return self._return
+
+    def _set_return(self, fraction):
+        self._return = fraction
+        x0, y0 = self._release_from
+        self._set_value(x0 * fraction, y0 * fraction)
+
+    returnFraction = Property(float, _get_return, _set_return)
+
+    def value(self):
+        return self._x, self._y
+
+    def centre(self):
+        self._set_value(0.0, 0.0)
+
+    def set_horizontal_enabled(self, enabled):
+        """
+        Turn the left/right axis off for a control that has no meaning there -
+        a gait that can't turn, say. The pad then draws as a vertical slot
+        rather than a circle, so it looks as constrained as it behaves; a
+        knob that simply refuses to go sideways reads as broken.
+        """
+        if enabled == self._horizontal:
+            return
+        self._horizontal = enabled
+        if not enabled:
+            self._set_value(0.0, self._y)
+        self.update()
+
+    def _set_value(self, x, y):
+        if not self._horizontal:
+            x = 0.0
+        # Clamp into the unit circle rather than the square, so the reachable
+        # area matches the ring drawn on screen.
+        magnitude = math.hypot(x, y)
+        if magnitude > 1.0:
+            x, y = x / magnitude, y / magnitude
+        if (x, y) == (self._x, self._y):
+            return
+        self._x, self._y = x, y
+        self.update()
+        self.moved.emit(x, y)
+
+    def _from_pos(self, pos):
+        radius = self.SIZE / 2 - self.KNOB_R
+        x = (pos.x() - self.SIZE / 2) / radius
+        y = -(pos.y() - self.SIZE / 2) / radius   # screen y grows downward
+        return x, y
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self.isEnabled():
+            self._animation.stop()
+            self._dragging = True
+            self._set_value(*self._from_pos(event.position()))
+
+    def mouseMoveEvent(self, event):
+        if self._dragging:
+            self._set_value(*self._from_pos(event.position()))
+
+    def mouseReleaseEvent(self, _event):
+        if not self._dragging:
+            return
+        self._dragging = False
+        self._release_from = (self._x, self._y)
+        self._animation.stop()
+        self._animation.setStartValue(1.0)
+        self._animation.setEndValue(0.0)
+        self._animation.start()
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        palette = self.palette()
+        group = QPalette.Normal if self.isEnabled() else QPalette.Disabled
+        outline = palette.color(group, QPalette.Mid)
+        # Blend the accent toward grey by hand when disabled. The palette's
+        # own Disabled Highlight is no help here - on Windows it comes back
+        # brighter than the Normal one, so the knob would stay vividly blue
+        # on a panel that's meant to look switched off.
+        accent = palette.color(QPalette.Normal, QPalette.Highlight)
+        if not self.isEnabled():
+            accent = _blend(accent, palette.color(QPalette.Window), 0.62)
+
+        travel = self.SIZE / 2 - self.KNOB_R
+        centre = self.SIZE / 2
+        well = QRectF(self.KNOB_R, self.KNOB_R, travel * 2, travel * 2)
+
+        painter.setBrush(palette.color(group, QPalette.Base))
+        painter.setPen(outline)
+        if self._horizontal:
+            painter.drawEllipse(well)
+        else:
+            # A capsule the width of the knob: the shape itself says "up and
+            # down only", before anyone tries to drag it sideways.
+            slot = QRectF(centre - self.KNOB_R, self.KNOB_R,
+                          self.KNOB_R * 2, travel * 2)
+            painter.drawRoundedRect(slot, self.KNOB_R, self.KNOB_R)
+
+        # Crosshair, so zero is findable without dragging to look for it
+        hair = _blend(palette.color(group, QPalette.Base), outline, 0.45)
+        painter.setPen(hair)
+        painter.drawLine(QPointF(centre, self.KNOB_R + 4), QPointF(centre, self.SIZE - self.KNOB_R - 4))
+        if self._horizontal:
+            painter.drawLine(QPointF(self.KNOB_R + 4, centre),
+                             QPointF(self.SIZE - self.KNOB_R - 4, centre))
+
+        knob_x = centre + self._x * travel
+        knob_y = centre - self._y * travel
+
+        # A line from centre to knob reads the deflection at a glance
+        if (self._x, self._y) != (0.0, 0.0):
+            painter.setPen(_blend(accent, outline, 0.35))
+            painter.drawLine(QPointF(centre, centre), QPointF(knob_x, knob_y))
+
+        painter.setPen(_blend(accent, QColor('#000000'), 0.35))
+        painter.setBrush(accent)
+        painter.drawEllipse(QPointF(knob_x, knob_y), self.KNOB_R, self.KNOB_R)
 
 
 class BatteryGauge(QWidget):

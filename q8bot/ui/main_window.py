@@ -18,6 +18,7 @@ routines run on a worker so the window keeps painting.
 '''
 
 import logging
+import math
 import threading
 import time
 
@@ -30,6 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..control_config import get_joystick_direction, get_joystick_magnitude
 from ..espnow import q8_espnow
 from ..helpers import Q8Logger
 from ..robot import Q8Bot
@@ -65,6 +67,10 @@ ROBOT_SILENT_SECONDS = 8.0   # ~2 missed replies before we stop claiming it's th
 # so it only uses slack) and ESP-NOW about 2 KB/s.
 TELEMETRY_HZ = 10
 
+# The move pad springs back through small values on release; ignore those
+# rather than firing a last twitch of movement on the way to centre.
+MOVE_PAD_DEADZONE = 0.15
+
 
 class MainWindow(QMainWindow):
     def __init__(self, log_handler):
@@ -82,6 +88,8 @@ class MainWindow(QMainWindow):
         self._connected_at = 0.0
         self._last_request_at = 0.0
         self._last_reply_at = None   # None until the robot has ever answered
+        self._shown_gait = None      # what the gait dropdown is currently showing
+        self._shown_torque = None    # what the torque button is currently showing
 
         self.connection = ConnectionPanel(self._list_gamepads)
         self.console = DebugConsole()
@@ -113,6 +121,10 @@ class MainWindow(QMainWindow):
         self.connection.gamepad_connect_requested.connect(self._connect_gamepad)
         self.connection.gamepad_disconnect_requested.connect(self._disconnect_gamepad)
         self.connection.mode_changed.connect(self._on_mode_changed)
+        self.manual.gait_selected.connect(self._select_gait)
+        self.manual.torque_toggle_requested.connect(self._toggle_torque)
+        self.manual.jump_requested.connect(self._manual_jump)
+        self.manual.greet_requested.connect(self._manual_greet)
         self.manual.set_available(self.connection.pc_mode)
 
         self._timer = QTimer(self)
@@ -149,12 +161,19 @@ class MainWindow(QMainWindow):
         # robot has to be holding itself up before any of this can drive it.
         self.bot.set_torque(True)
         self.bot.stand(1000)
+        self._shown_torque = True
+        self.manual.set_torque(True)
         Q8Logger.info("Torque on, moving to stance.")
 
         # Telemetry runs whenever this window holds a robot. It's
         # request/response, so closing the window simply stops asking - there
         # is no streaming state left running on the robot.
         self.bot.telemetry_hz = TELEMETRY_HZ
+
+        self._shown_gait = self.bot.gait
+        self.manual.set_gaits(self.bot.catalog, self._shown_gait)
+        self.manual.set_can_turn(self.bot.can_turn)
+        self.manual.set_routines_enabled(True)
 
     def _disconnect_robot(self):
         if self.bot is not None:
@@ -165,6 +184,11 @@ class MainWindow(QMainWindow):
         self.connection.set_robot_status(StatusDot.OFF, "Not connected")
         self.info.set_battery(None)
         self.info.set_telemetry(None)
+        self.manual.set_gaits([])
+        self._shown_gait = None
+        self._shown_torque = None
+        self.manual.set_torque(None)
+        self.manual.set_routines_enabled(False)
         self._set_status("Not connected")
         Q8Logger.info("Disconnected.")
 
@@ -263,12 +287,105 @@ class MainWindow(QMainWindow):
                 StatusDot.ERROR, "Connection lost", "The link dropped - check the cable.")
             self.info.set_battery(None)
             self.info.set_telemetry(None)
+            self.manual.set_gaits([])
+            self._shown_gait = None
+            self._shown_torque = None
+            self.manual.set_torque(None)
+            self.manual.set_routines_enabled(False)
             self._set_status("Connection lost")
             return
 
         self._poll_robot_liveness()
         self.info.set_telemetry(self.bot.telemetry)
+        self._poll_torque_button()
+        self.manual.set_routines_enabled(not self._routine_running())
         self._poll_gamepad()
+        self._poll_manual()
+
+    #-------------------#
+    # Manual control    #
+    #-------------------#
+
+    def _poll_manual(self):
+        """
+        Drive both pads from the poll loop rather than their moved signals -
+        a drag emits far faster than the robot needs, and this keeps manual
+        and gamepad control on the same cadence.
+
+        Both go into one set_stance() call so offset and tilt compose instead
+        of overwriting each other. It's idle-only and no-ops at dead centre,
+        so nothing is sent while the pads are parked or a gait is running.
+        """
+        if not self.connection.pc_mode:
+            return  # the pads only drive in PC mode
+
+        # Keep the dropdown honest if the gait changed elsewhere - the
+        # gamepad's switch_gait button cycles it too.
+        if self.bot.gait != self._shown_gait:
+            self._shown_gait = self.bot.gait
+            self.manual.show_gait(self._shown_gait)
+            self.manual.set_can_turn(self.bot.can_turn)
+
+        # Walking wins over posing, the same order operate.py uses: a stance
+        # offset is meaningless once a gait owns the leg positions.
+        mx, my = self.manual.move_pad.value()
+        if math.hypot(mx, my) >= MOVE_PAD_DEADZONE:
+            # Reuse the gamepad's own mapping so a given deflection means the
+            # same thing on both. Its vertical axis is negative-is-forward.
+            direction = get_joystick_direction(mx, -my, analog_mode=True)
+            if direction:
+                self.bot.move(direction, get_joystick_magnitude(mx, -my))
+                return
+
+        self.bot.idle()  # no-op once already idle
+        x, y = self.manual.stance_pad.value()
+        roll, pitch = self.manual.tilt_pad.value()
+        self.bot.set_stance(
+            dx=x * ManualControlPanel.STANCE_MAX_X,
+            dy=y * ManualControlPanel.STANCE_MAX_Y,
+            roll=roll * ManualControlPanel.TILT_MAX,
+            pitch=pitch * ManualControlPanel.TILT_MAX,
+        )
+
+    def _toggle_torque(self):
+        if self.bot is None or not self.bot.connected:
+            return
+        on = self.bot.set_torque(not self.bot.torque)
+        self._shown_torque = on
+        self.manual.set_torque(on)
+        Q8Logger.info(f"Torque {'ON' if on else 'OFF'}.")
+
+    def _poll_torque_button(self):
+        """
+        Keep the button honest against the gamepad's RB, which toggles
+        torque too (see _poll_gamepad_actions) - whichever one last changed
+        it, both should show the same state.
+        """
+        if self.bot.torque != self._shown_torque:
+            self._shown_torque = self.bot.torque
+            self.manual.set_torque(self._shown_torque)
+
+    def _manual_jump(self):
+        if self.bot is None or not self.bot.connected or self._routine_running():
+            return
+        self._run_routine("Jump", self.bot.jump)
+
+    def _manual_greet(self):
+        if self.bot is None or not self.bot.connected or self._routine_running():
+            return
+        self._run_routine("Greet", self.bot.greet)
+
+    def _select_gait(self, name):
+        """Dropdown -> robot. Ignored if the robot won't load it."""
+        if self.bot is None or not self.bot.connected:
+            return
+        if self.bot.set_gait(name):
+            self._shown_gait = self.bot.gait
+            self.manual.set_can_turn(self.bot.can_turn)
+            Q8Logger.info(f"Switched to {self._shown_gait}.")
+        else:
+            Q8Logger.error(f"Could not load {name}.")
+            self.manual.show_gait(self.bot.gait)
 
     #-------------------#
     # Gamepad control   #

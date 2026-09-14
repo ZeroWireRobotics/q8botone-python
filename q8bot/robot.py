@@ -26,6 +26,7 @@ greet, show_range, shoot) block for as long as the routine takes.
 '''
 
 import functools
+import math
 import threading
 import time
 from enum import Enum
@@ -48,6 +49,18 @@ from .protocol import (
 CENTER_DIST = 19.5  # Distance between two actuators
 L1 = 25             # Upper leg length
 L2 = 40             # Lower leg length
+
+# Distance between leg pivots, for body tilt. Measured off the robot's own
+# mesh (q8bot/assets, the two actuator blocks sit at x = -39.2 and +38.7, and
+# the hips span the full 79.6mm width), so treat these as good estimates
+# rather than drawing dimensions - they only scale how many degrees a given
+# tilt is *called*, not whether it works. Correct them from CAD when handy.
+TRACK_MM = 80.0      # left-to-right, the axis roll tilts about
+WHEELBASE_MM = 78.0  # front-to-back, the axis pitch tilts about
+
+# Order of the 8 joint angles on the wire, matching gait_generator's
+# append_pos_list(): front-left, front-right, back-left, back-right.
+LEG_ORDER = ('FL', 'FR', 'BL', 'BR')
 
 # How often the background thread runs. Matches operate.py's original loop
 # rate, which is what the streamed trajectories were tuned against.
@@ -230,6 +243,19 @@ class Q8Bot:
         """
         return [gait_info(name, self.gaits) for name in self.selectable]
 
+    @property
+    def can_turn(self):
+        """
+        Whether the current gait actually steers.
+
+        CRAWL and BOUND only generate forward and backward; their turn
+        variants fall back to straight f/b, so lateral input does nothing at
+        all. A front end can use this to disable its steering axis rather
+        than let someone push a control that silently no-ops.
+        """
+        with self._lock:
+            return self._gait_manager.resolve_direction('l') == 'l'
+
     def supported_directions(self):
         """
         Which of protocol.DIRECTION_ORDER the current gait can actually do,
@@ -336,23 +362,66 @@ class Q8Bot:
     @_needs_link
     def stance_trim(self, dx, dy):
         """
-        Shift the standing pose by (dx, dy) mm. Idle only - a running gait
-        owns the leg positions. Passing (0, 0) eases back to the baseline
-        rather than adopting the trim as a new one.
+        Shift the standing pose by (dx, dy) mm, keeping the body level.
+        Kept as its own name because the gamepad's right stick drives it.
+        """
+        return self.set_stance(dx, dy)
+
+    @_needs_link
+    def set_stance(self, dx=0.0, dy=0.0, roll=0.0, pitch=0.0):
+        """
+        Pose the robot while standing: shift it by (dx, dy) mm and/or tilt the
+        body by roll/pitch in degrees. Idle only - a running gait owns the leg
+        positions. All-zero eases back to the baseline rather than adopting
+        the current pose as a new one.
+
+        Roll is positive leaning right, pitch positive nose up. Tilt is done
+        by extending the legs on one side and retracting the other, which is a
+        small-angle approximation of a body rotation - good enough to look and
+        behave right, and it needs no model the solver doesn't already have.
 
         Returns:
-            bool: False if not idle.
+            bool: False if not idle, or if any leg's target is unreachable.
         """
         with self._lock:
             if self._mode is not Mode.IDLE:
                 return False
-            if dx or dy:
-                self._trimmed = True
-                return self._move_to(self._pos_x + dx, self._pos_y + dy, 0)
-            if self._trimmed:
-                self._trimmed = False
-                return self._move_to(self._pos_x, self._pos_y, 300)
-            return True
+
+            if not (dx or dy or roll or pitch):
+                if self._trimmed:
+                    self._trimmed = False
+                    return self._move_to(self._pos_x, self._pos_y, 300)
+                return True
+
+            self._trimmed = True
+            x = self._pos_x + dx
+            y = self._pos_y + dy
+
+            if not (roll or pitch):
+                # Every leg lands on the same target, so one mirrored write
+                # does it - a quarter of the payload and no per-leg IK.
+                return self._move_to(x, y, 0)
+
+            # Raising a corner means extending that leg, so height offsets go
+            # straight onto y. Half-spacing because a tilt lifts one side by
+            # as much as it drops the other.
+            roll_mm = (TRACK_MM / 2) * math.tan(math.radians(roll))
+            pitch_mm = (WHEELBASE_MM / 2) * math.tan(math.radians(pitch))
+            offsets = {
+                'FL': +roll_mm + pitch_mm,
+                'FR': -roll_mm + pitch_mm,
+                'BL': +roll_mm - pitch_mm,
+                'BR': -roll_mm - pitch_mm,
+            }
+
+            angles, reachable = [], True
+            for leg in LEG_ORDER:
+                q1, q2, ok = self.leg.ik_solve(x, y + offsets[leg], True, 1)
+                angles += [q1, q2]
+                reachable = reachable and ok
+
+            self._guard(self.link.move_all, angles, 0)
+            return reachable
 
     #-------------------#
     # Gait selection    #

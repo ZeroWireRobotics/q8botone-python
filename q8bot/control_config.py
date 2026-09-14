@@ -328,8 +328,13 @@ def get_joystick_direction(axis0, axis1, analog_mode=False):
             # Only very extreme positions are pure left/right
             return 'l' if axis0 < 0 else 'r'
 
-        # Forward/backward with turning
-        if abs_a1 > abs_a0:  # Forward/backward dominant
+        # Forward/backward with turning.
+        # >= not >, so an exact diagonal is a forward arc rather than a spin
+        # in place. On a stick the tie is vanishingly rare, but a mouse-dragged
+        # pad clamped to a circle lands on precisely 45 degrees whenever you
+        # drag into a corner - and which side of the tie you fell on was being
+        # decided by floating-point noise, so up-left arced while up-right spun.
+        if abs_a1 >= abs_a0:  # Forward/backward dominant
             base_dir = 'f' if axis1 < 0 else 'b'
             turn_dir = 'l' if axis0 < 0 else 'r'
 
