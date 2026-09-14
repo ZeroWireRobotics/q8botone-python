@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..helpers import XiaoPortFinder
-from .widgets import ClickableLabel, StatusDot, ToggleSwitch
+from .widgets import BatteryGauge, ClickableLabel, StatusDot, ToggleSwitch
 
 # Manual Control and Robot Information sit side by side and their Joint 1-8
 # rows are meant to read across the gap, so both grids are pinned to the same
@@ -314,10 +314,13 @@ class RobotInfoPanel(QGroupBox):
     """
     Battery and per-joint telemetry.
 
-    Only Battery % is live - it comes back in BATTERY_REPLY. Voltage isn't in
-    that reply at all, and while the firmware already reads joint position and
-    current (q8Dynamixel::syncRead) it only feeds the recording path, with no
-    command to query it live. Temperature isn't read at all.
+    Everything here is live: battery percent and raw pack voltage both come
+    from one BATTERY_REPLY (and one ADC sample, so they can't disagree), and
+    the three joint columns come from TELEMETRY_REPLY.
+
+    Position and current are read fresh on every snapshot; temperature is
+    whatever the robot last sampled on its own ~1s timer, since it sits
+    outside the register block the main read covers and moves over seconds.
     """
 
     JOINT_COUNT = 8
@@ -327,16 +330,21 @@ class RobotInfoPanel(QGroupBox):
         super().__init__("Robot Information", parent)
         grid = QGridLayout(self)
 
-        # The battery row lives in its own layout so its wide fields don't
-        # stretch the per-joint columns underneath it.
-        self.battery_voltage = QLineEdit()
-        self.battery_percent = QLineEdit()
+        # One gauge plus its two readouts, rather than a labelled box each -
+        # the level is the thing you glance at, and the numbers are the
+        # detail. Its own layout so it can't stretch the joint columns below.
+        self.battery_gauge = BatteryGauge()
+        self.battery_percent = QLabel()
+        self.battery_voltage = QLabel()
+        self.battery_percent.setMinimumWidth(42)
+        self.battery_voltage.setMinimumWidth(58)
+
         battery_row = QHBoxLayout()
-        battery_row.addWidget(QLabel("Battery Voltage"))
-        battery_row.addWidget(self.battery_voltage, 1)
-        battery_row.addSpacing(12)
-        battery_row.addWidget(QLabel("Battery %"))
-        battery_row.addWidget(self.battery_percent, 1)
+        battery_row.addWidget(QLabel("Battery"))
+        battery_row.addWidget(self.battery_gauge)
+        battery_row.addWidget(self.battery_percent)
+        battery_row.addWidget(self.battery_voltage)
+        battery_row.addStretch()
         grid.addLayout(battery_row, 0, 0, 1, len(self.COLUMNS) + 1)
 
         for column, name in enumerate(self.COLUMNS):
@@ -357,17 +365,39 @@ class RobotInfoPanel(QGroupBox):
         for column in range(len(self.COLUMNS)):
             grid.setColumnStretch(column + 1, 1)
 
-        for field in (self.battery_voltage, self.battery_percent,
-                      *self.joint_fields.values()):
+        # Joint readouts only - the battery row is plain labels now.
+        for field in self.joint_fields.values():
             field.setReadOnly(True)
             field.setFocusPolicy(Qt.NoFocus)
 
-        # The firmware only reports a percentage - there's no voltage in
-        # BATTERY_REPLY, so that box stays empty for now.
-        self.battery_voltage.setPlaceholderText("not reported by firmware")
         for row in range(2 + self.JOINT_COUNT):
             grid.setRowMinimumHeight(row, PANEL_ROW_HEIGHT)
         grid.setRowStretch(2 + self.JOINT_COUNT, 1)
 
-    def set_battery(self, percent):
+    def set_battery(self, percent, volts=None):
+        self.battery_gauge.set_percent(percent)
         self.battery_percent.setText("" if percent is None else f"{percent}%")
+        # volts stays None against firmware old enough to send only a
+        # percentage, so that readout empties rather than showing a stale one.
+        self.battery_voltage.setText("" if volts is None else f"{volts:.2f} V")
+
+    # Raw ticks are what the firmware reports; 4096 ticks per revolution on
+    # these servos, with the same zero offset q8Dynamixel uses.
+    TICKS_PER_REV = 4096
+    ZERO_OFFSET = 4096
+
+    def set_telemetry(self, sample):
+        """
+        Fill the joint grid from one snapshot (see protocol.parse_telemetry),
+        or clear it when passed None.
+        """
+        if sample is None:
+            for field in self.joint_fields.values():
+                field.setText("")
+            return
+
+        for i in range(self.JOINT_COUNT):
+            degrees = (sample['position'][i] - self.ZERO_OFFSET) * 360.0 / self.TICKS_PER_REV
+            self.joint_fields[("Position", i)].setText(f"{degrees:.1f}°")
+            self.joint_fields[("Current", i)].setText(f"{sample['current'][i]} mA")
+            self.joint_fields[("Temperature", i)].setText(f"{sample['temperature'][i]}°C")

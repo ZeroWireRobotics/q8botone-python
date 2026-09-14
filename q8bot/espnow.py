@@ -94,6 +94,14 @@ class q8_espnow:
     def check_battery(self):
         return self._send(CmdType.BATTERY_REQUEST)
 
+    def request_telemetry(self):
+        """
+        Ask for one joint snapshot. The robot answers with a TELEMETRY_REPLY
+        (see protocol.parse_telemetry) - one request, one reply, so there is
+        no streaming state on the robot to get stuck on.
+        """
+        return self._send(CmdType.TELEMETRY_REQUEST)
+
     def send_jump(self):
         return self._send(CmdType.JUMP)
 

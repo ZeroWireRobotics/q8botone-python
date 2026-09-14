@@ -35,7 +35,14 @@ from .espnow import q8_espnow
 from .gait_manager import GAITS, GaitManager, gait_info
 from .helpers import Q8Logger, XiaoPortFinder
 from .kinematics_solver import k_solver
-from .protocol import DIRECTION_ORDER, DIRECTION_TO_ID, GAIT_NAME_TO_ID, ReplyType
+from .protocol import (
+    DIRECTION_ORDER,
+    DIRECTION_TO_ID,
+    GAIT_NAME_TO_ID,
+    ReplyType,
+    parse_battery,
+    parse_telemetry,
+)
 
 # Q8bot leg configuration
 CENTER_DIST = 19.5  # Distance between two actuators
@@ -58,6 +65,12 @@ INTERNAL_ONLY_GAITS = {INPLACE_GAIT}
 
 # Bound per tick so a chatty robot can't stall the loop.
 MAX_REPLIES_PER_TICK = 8
+
+# Joint telemetry is request/response - one ask, one snapshot - so there is no
+# streaming state on the robot that a crashed host could leave running. Off by
+# default: a front end that displays it opts in (the desktop UI uses 10 Hz,
+# which costs the servo bus about one percent).
+DEFAULT_TELEMETRY_HZ = 0
 
 # Streaming advances the trajectory by elapsed time, not by one frame per
 # wakeup, so gait speed doesn't depend on how precisely the host can sleep -
@@ -126,11 +139,11 @@ class Q8Bot:
         # commands are built out of the lower-level ones (idle -> stand).
         self._lock = threading.RLock()
 
-        # Battery gets its own lock rather than sharing the one above: a UI
-        # polls the reading every frame, and the scripted routines hold the
+        # Reply-derived state gets its own lock rather than sharing the one
+        # above: a UI polls it every frame, and the scripted routines hold the
         # main lock for seconds at a time (show_range for ~13), which would
         # otherwise freeze that poll - and the UI thread with it.
-        self._battery_lock = threading.Lock()
+        self._reply_lock = threading.Lock()
 
         self._mode = Mode.IDLE
         self._stream_manager = None   # which GaitManager the tick pulls from
@@ -140,7 +153,11 @@ class Q8Bot:
         self._trimmed = False
         self._stream_due = 0.0        # monotonic time the next frame is due
         self._battery_pct = None
+        self._battery_volts = None
         self._battery_fresh = False
+        self._telemetry = None
+        self._telemetry_hz = DEFAULT_TELEMETRY_HZ
+        self._telemetry_last_request = 0.0
         self._pos_x = 0.0
         self._pos_y = 0.0
         self._connected = True
@@ -393,11 +410,48 @@ class Q8Bot:
         arrives, so a caller can poll this every frame and only act on fresh
         values - no callbacks off the tick thread to worry about.
         """
-        with self._battery_lock:
+        with self._reply_lock:
             if not self._battery_fresh:
                 return None
             self._battery_fresh = False
             return self._battery_pct
+
+    @property
+    def battery_volts(self):
+        """
+        Raw pack voltage from the last reading, or None if the robot hasn't
+        answered yet (or is running firmware that only reports a percentage).
+
+        Latest-value rather than take-once like take_battery_reading(), since
+        a UI wants it whenever it repaints.
+        """
+        with self._reply_lock:
+            return self._battery_volts
+
+    @property
+    def telemetry_hz(self):
+        """How often joint snapshots are requested. 0 disables them."""
+        return self._telemetry_hz
+
+    @telemetry_hz.setter
+    def telemetry_hz(self, hz):
+        self._telemetry_hz = max(0.0, float(hz))
+
+    @property
+    def telemetry(self):
+        """
+        The most recent joint snapshot, or None if none has arrived.
+
+        A dict of 'position' (raw ticks), 'current' (mA, signed) and
+        'temperature' (degrees C), each 8 long. Latest-value rather than
+        take-once like the battery, because this is a continuous stream a UI
+        wants to render whenever it repaints.
+
+        Readable with torque off - current just sits near zero because none
+        is flowing, while position still tracks the leg if you back-drive it.
+        """
+        with self._reply_lock:
+            return self._telemetry
 
     #-------------------#
     # Scripted routines #
@@ -555,6 +609,7 @@ class Q8Bot:
                     self._guard(self.link.run_gait, *self._native_cmd)
                     self._native_last_sent = now
 
+            self._request_telemetry_if_due()
             self._drain_replies()
 
     def _stream_tick(self):
@@ -583,6 +638,16 @@ class Q8Bot:
         if pos:
             self._guard(self.link.move_all, pos, 0)
 
+    def _request_telemetry_if_due(self):
+        """One ask per interval. Runs on the tick thread, like the keep-alive."""
+        if self._telemetry_hz <= 0:
+            return
+        now = time.monotonic()
+        if now - self._telemetry_last_request < 1.0 / self._telemetry_hz:
+            return
+        self._telemetry_last_request = now
+        self._guard(self.link.request_telemetry)
+
     def _drain_replies(self):
         self._guard(self._drain_replies_unguarded)
 
@@ -595,9 +660,16 @@ class Q8Bot:
                 return
             reply_type, payload = reply
             if reply_type == ReplyType.BATTERY_REPLY and payload:
-                with self._battery_lock:
-                    self._battery_pct = payload[0]
+                percent, volts = parse_battery(payload)
+                with self._reply_lock:
+                    self._battery_pct = percent
+                    self._battery_volts = volts
                     self._battery_fresh = True
+            elif reply_type == ReplyType.TELEMETRY_REPLY:
+                sample = parse_telemetry(payload)
+                if sample is not None:
+                    with self._reply_lock:
+                        self._telemetry = sample
 
     def _run(self):
         next_tick = time.monotonic()

@@ -10,6 +10,7 @@ MSG_TYPE + LENGTH + PAYLOAD. The C++ side (firmware/*/include/protocol.h)
 must stay in sync with this module.
 '''
 
+import struct
 from enum import IntEnum
 
 START_BYTE = 0xAA
@@ -31,12 +32,14 @@ class CmdType(IntEnum):
                             # tells q8bot_controller to switch from independent (gamepad) mode
                             # to relay mode
     LED_BRIGHTNESS = 0x0A  # {brightness: uint8, 0-255} - sets & persists the robot's RGB LED brightness
+    TELEMETRY_REQUEST = 0x0B  # no payload - ask for one joint snapshot, answered with TELEMETRY_REPLY
 
 
 class ReplyType(IntEnum):
     """Robot -> host replies."""
-    BATTERY_REPLY = 0x81
+    BATTERY_REPLY = 0x81      # {percent: uint8, millivolts: uint16}
     RECORD_DATA_REPLY = 0x82  # retired alongside RECORD_SEND; do not reuse
+    TELEMETRY_REPLY = 0x83    # one joint snapshot - see TELEMETRY_STRUCT
 
 
 # Canonical direction ordering for GAIT_RUN's direction_id (0-11). Must match
@@ -66,6 +69,53 @@ GAIT_IDS = {
 # bytes a GAIT_RUN payload wants.
 DIRECTION_TO_ID = {name: i for i, name in enumerate(DIRECTION_ORDER)}
 GAIT_NAME_TO_ID = {name: gait_id for gait_id, name in GAIT_IDS.items()}
+
+
+# TELEMETRY_REPLY payload: all 8 joints, 56 bytes. Must match the
+# TelemetryPayload struct in firmware/q8bot_robot/include/protocol.h.
+#
+# Position and current are read fresh on every request; temperature is
+# whatever the robot last sampled (it refreshes on its own ~1s timer), since
+# it sits outside the contiguous register block the main read covers and
+# moves over seconds rather than milliseconds.
+TELEMETRY_STRUCT = struct.Struct('<8i8h8b')
+TELEMETRY_SIZE = TELEMETRY_STRUCT.size   # 56
+
+
+def parse_battery(payload: bytes):
+    """
+    Unpack a BATTERY_REPLY payload.
+
+    Returns:
+        (percent, volts) - volts is None against firmware old enough to send
+        only the percentage, so a host update without a reflash still reads
+        the charge level instead of failing.
+    """
+    if not payload:
+        return None, None
+    percent = payload[0]
+    if len(payload) >= 3:
+        return percent, struct.unpack_from('<H', payload, 1)[0] / 1000.0
+    return percent, None
+
+
+def parse_telemetry(payload: bytes):
+    """
+    Unpack a TELEMETRY_REPLY payload.
+
+    Returns:
+        dict with 'position' (raw ticks), 'current' (mA, signed - reads near
+        zero with torque off, since none is flowing) and 'temperature'
+        (degrees C), each a tuple of 8. None if the payload is the wrong size.
+    """
+    if len(payload) != TELEMETRY_SIZE:
+        return None
+    values = TELEMETRY_STRUCT.unpack(payload)
+    return {
+        'position': values[0:8],
+        'current': values[8:16],
+        'temperature': values[16:24],
+    }
 
 
 def crc16_arc(data: bytes, crc: int = 0x0000) -> int:

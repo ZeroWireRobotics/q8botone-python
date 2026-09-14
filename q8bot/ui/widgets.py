@@ -190,6 +190,71 @@ class StatusDot(QWidget):
         painter.drawEllipse(QRectF(centre, centre, self.DIAMETER, self.DIAMETER))
 
 
+class BatteryGauge(QWidget):
+    """
+    A battery-shaped level bar. Shows charge at a glance; the exact percent
+    and voltage live in labels beside it (see RobotInfoPanel).
+
+    Bands match the colours the status dots use, so "amber means pay
+    attention" reads the same way everywhere in the window.
+    """
+
+    GOOD, LOW, CRITICAL = 30, 10, 0
+    COLORS = {
+        'good': QColor('#2ea043'),
+        'low': QColor('#d9820a'),
+        'critical': QColor('#d13438'),
+    }
+    BODY_W, BODY_H = 78, 18
+    CAP_W, CAP_H = 3, 8
+    INSET = 2.5
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(self.BODY_W + self.CAP_W + 2, self.BODY_H + 2)
+        self._percent = None
+
+    def set_percent(self, percent):
+        self._percent = None if percent is None else max(0, min(100, int(percent)))
+        self.setToolTip("No reading yet" if self._percent is None
+                        else f"Battery {self._percent}%")
+        self.update()
+
+    def _fill_color(self):
+        if self._percent > self.GOOD:
+            return self.COLORS['good']
+        if self._percent > self.LOW:
+            return self.COLORS['low']
+        return self.COLORS['critical']
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        palette = self.palette()
+        outline = _blend(palette.color(QPalette.Mid), palette.color(QPalette.Shadow), 0.3)
+
+        body = QRectF(0.5, 0.5, self.BODY_W, self.BODY_H)
+        painter.setPen(outline)
+        painter.setBrush(palette.color(QPalette.Base))
+        painter.drawRoundedRect(body, 3, 3)
+
+        # The terminal nub, so it reads as a battery rather than a progress bar
+        cap = QRectF(self.BODY_W + 0.5, (self.BODY_H - self.CAP_H) / 2 + 0.5,
+                     self.CAP_W, self.CAP_H)
+        painter.setBrush(outline)
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(cap, 1, 1)
+
+        if not self._percent:
+            return  # nothing to fill: no reading, or a flat pack
+
+        track = body.adjusted(self.INSET, self.INSET, -self.INSET, -self.INSET)
+        fill = QRectF(track)
+        fill.setWidth(track.width() * self._percent / 100.0)
+        painter.setBrush(self._fill_color())
+        painter.drawRoundedRect(fill, 1.5, 1.5)
+
+
 class ClickableLabel(QLabel):
     """A label that acts as a bigger hit target for the control beside it."""
 

@@ -3,9 +3,9 @@ Written by yufeng.wu0902@gmail.com
 
 The Q8bot desktop control window.
 
-Connection, the Debug Console and gamepad control are live; it owns a Q8Bot
-the same way operate.py does and drives it from the same InputHandler. The
-Manual Control sliders and the per-joint telemetry are still placeholders
+Connection, the Debug Console, gamepad control and the Robot Information
+readouts are live; it owns a Q8Bot the same way operate.py does and drives it
+from the same InputHandler. The Manual Control sliders are still placeholders
 (see panels.py).
 
 One QTimer does everything: drains the log queue, polls bot.connected and
@@ -59,6 +59,11 @@ STANCE_TRIM_MAX_DY = 15.0
 # paired, so the indicator is driven by that round trip instead.
 BATTERY_POLL_SECONDS = 3.0
 ROBOT_SILENT_SECONDS = 8.0   # ~2 missed replies before we stop claiming it's there
+
+# Joint telemetry, on for as long as the window has a robot. Costs the servo
+# bus about one percent (the read lands on 1 tick in 20, after the gait write,
+# so it only uses slack) and ESP-NOW about 2 KB/s.
+TELEMETRY_HZ = 10
 
 
 class MainWindow(QMainWindow):
@@ -146,6 +151,11 @@ class MainWindow(QMainWindow):
         self.bot.stand(1000)
         Q8Logger.info("Torque on, moving to stance.")
 
+        # Telemetry runs whenever this window holds a robot. It's
+        # request/response, so closing the window simply stops asking - there
+        # is no streaming state left running on the robot.
+        self.bot.telemetry_hz = TELEMETRY_HZ
+
     def _disconnect_robot(self):
         if self.bot is not None:
             self.bot.close()
@@ -154,6 +164,7 @@ class MainWindow(QMainWindow):
         self.connection.set_robot_connected(False)
         self.connection.set_robot_status(StatusDot.OFF, "Not connected")
         self.info.set_battery(None)
+        self.info.set_telemetry(None)
         self._set_status("Not connected")
         Q8Logger.info("Disconnected.")
 
@@ -251,10 +262,12 @@ class MainWindow(QMainWindow):
             self.connection.set_robot_status(
                 StatusDot.ERROR, "Connection lost", "The link dropped - check the cable.")
             self.info.set_battery(None)
+            self.info.set_telemetry(None)
             self._set_status("Connection lost")
             return
 
         self._poll_robot_liveness()
+        self.info.set_telemetry(self.bot.telemetry)
         self._poll_gamepad()
 
     #-------------------#
@@ -349,7 +362,7 @@ class MainWindow(QMainWindow):
         if battery is not None:
             first_reply = self._last_reply_at is None
             self._last_reply_at = now
-            self.info.set_battery(battery)
+            self.info.set_battery(battery, self.bot.battery_volts)
             # No percentage here - Robot Information already shows it. This
             # label's job is whether the robot is answering, nothing more.
             self.connection.set_robot_status(
