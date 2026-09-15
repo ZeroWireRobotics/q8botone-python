@@ -731,6 +731,12 @@ class Q8Bot:
         routine and holds the lock, exactly like jump()/greet() do, so
         nothing else drives the robot mid-sequence.
 
+        A waypoint with a 'stance' key (see routine_store.stance_waypoint())
+        means "move to the current gait's neutral stance" rather than a
+        captured pose - the teach dialog always brackets a routine with one
+        of these at the start and one at the end, computed fresh here rather
+        than as fixed angles baked in at teach time.
+
         Returns:
             bool: False if a waypoint failed to send (e.g. the link died
             partway through) - the routine stops there rather than pressing
@@ -742,10 +748,25 @@ class Q8Bot:
             for waypoint in waypoints:
                 duration_ms = waypoint.get('duration_ms', DEFAULT_ROUTINE_DURATION_MS)
                 hold_s = waypoint.get('hold_s', DEFAULT_ROUTINE_HOLD_S)
-                if not self._guard(self.link.move_all, waypoint['angles'], duration_ms):
+                if waypoint.get('stance'):
+                    self.stand(duration_ms)
+                elif not self._guard(self.link.move_all, waypoint['angles'], duration_ms):
                     return False
-                time.sleep(hold_s)
-            self.stand(500)
+                # move_all()/stand() are fire-and-forget - duration_ms only
+                # sets the servo's own glide time, it doesn't block this
+                # call. Without waiting it out here, the next waypoint's
+                # goal would land on the bus before this one finished
+                # moving, cutting most waypoints off before the robot ever
+                # reaches them. Same reason routine_generator.py's
+                # hardcoded routines always sleep at least the move's
+                # duration before their next command.
+                time.sleep(duration_ms / 1000.0 + hold_s)
+
+            # Routines taught since the 'stance' waypoint existed already end
+            # on one (bracketed by the dialog); this is only a fallback for
+            # older saved routines that predate it.
+            if not (waypoints and waypoints[-1].get('stance')):
+                self.stand(500)
             return True
 
     #-------------------#

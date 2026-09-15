@@ -132,6 +132,7 @@ class MainWindow(QMainWindow):
         self.manual.greet_requested.connect(self._manual_greet)
         self.manual.routine_play_requested.connect(self._play_routine)
         self.manual.routine_teach_requested.connect(self._teach_routine)
+        self.manual.routine_edit_requested.connect(self._edit_routine)
         self.manual.routine_delete_requested.connect(self._delete_routine)
         self.manual.set_available(self.connection.pc_mode)
 
@@ -199,6 +200,7 @@ class MainWindow(QMainWindow):
         self.connection.set_robot_status(StatusDot.OFF, "Not connected")
         self.info.set_battery(None)
         self.info.set_telemetry(None)
+        self.info.setEnabled(True)   # in case a routine had it greyed out
         self.manual.set_gaits([])
         self._shown_gait = None
         self._shown_joint_mode = None
@@ -303,6 +305,7 @@ class MainWindow(QMainWindow):
                 StatusDot.ERROR, "Connection lost", "The link dropped - check the cable.")
             self.info.set_battery(None)
             self.info.set_telemetry(None)
+            self.info.setEnabled(True)   # in case a routine had it greyed out
             self.manual.set_gaits([])
             self._shown_gait = None
             self._shown_joint_mode = None
@@ -316,6 +319,11 @@ class MainWindow(QMainWindow):
         self._poll_robot_liveness()
         self.info.set_telemetry(self.bot.telemetry)
         self._poll_joint_mode()
+        # Telemetry itself stalls during a routine anyway - Q8Bot's tick
+        # thread can't get the lock a routine holds for its whole duration,
+        # so the panel would just be showing stale numbers. Greying it out
+        # says so instead of quietly going stale looking live.
+        self.info.setEnabled(not self._routine_running())
         self.manual.set_scripted_routines_enabled(not self._routine_running())
         self.manual.set_saved_routines_enabled(self._routine_slots_available())
         self._poll_gamepad()
@@ -474,7 +482,26 @@ class MainWindow(QMainWindow):
     def _teach_routine(self):
         if self.bot is None or not self.bot.connected or not self._routine_slots_available():
             return
+        self._open_teach_dialog()
 
+    def _edit_routine(self, path):
+        if self.bot is None or not self.bot.connected or not self._routine_slots_available():
+            return
+        name = next((n for n, p in self._saved_routines if p == path), path.stem)
+        try:
+            waypoints = routine_store.load(path)
+        except Exception as exc:
+            Q8Logger.error(f"Could not load routine '{name}' to edit: {exc}")
+            return
+        self._open_teach_dialog(existing=(name, waypoints))
+
+    def _open_teach_dialog(self, existing=None):
+        """
+        Shared setup for both teaching a new routine and editing a saved
+        one - existing=(name, waypoints) pre-loads the dialog for editing;
+        None starts empty. See TeachRoutineDialog's own `existing` note for
+        what saving under the same vs. a different name does.
+        """
         # Teaching means posing with the Stance/Body Tilt pads or the joint
         # mode slider, both of which live in Manual Control and only work
         # in PC mode - switch to it automatically rather than opening a
@@ -499,13 +526,16 @@ class MainWindow(QMainWindow):
 
         self._teach_dialog = TeachRoutineDialog(
             capture_pose=self.bot.capture_pose, run_preview=self._preview_routine,
-            parent=self)
+            existing=existing, parent=self)
         self._teach_dialog.saved.connect(self._on_routine_saved)
         self._teach_dialog.closed.connect(self._on_teach_closed)
         self._teach_dialog.position_beside(self)
         self._teach_dialog.show()
-        Q8Logger.info("Teaching a new routine - joints are damped for "
-                     "hand-posing, then Capture.")
+        if existing:
+            Q8Logger.info(f"Editing '{existing[0]}' - joints are damped for hand-posing.")
+        else:
+            Q8Logger.info("Teaching a new routine - joints are damped for "
+                         "hand-posing, then Capture.")
 
     def _preview_routine(self, waypoints):
         """

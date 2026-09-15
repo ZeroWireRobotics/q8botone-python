@@ -289,6 +289,7 @@ class ManualControlPanel(QGroupBox):
     greet_requested = Signal()
     routine_play_requested = Signal(object)    # path
     routine_teach_requested = Signal()          # an empty slot was clicked
+    routine_edit_requested = Signal(object)    # path
     routine_delete_requested = Signal(object)  # path
 
     # Full deflection, in the units each pad commands.
@@ -464,12 +465,20 @@ class ManualControlPanel(QGroupBox):
         grid.addWidget(routines_heading, 5, 0, 1, 4)
 
         self.routine_buttons = []
+        self.routine_edit_buttons = []
         self.routine_delete_buttons = []
         for i in range(self.ROUTINE_SLOTS):
             button = QPushButton()
             button.setEnabled(False)
             button.clicked.connect(
                 lambda _checked=False, index=i: self._routine_slot_clicked(index))
+
+            edit_button = QPushButton("✎")
+            edit_button.setFixedWidth(28)
+            edit_button.setToolTip("Edit this routine")
+            edit_button.setEnabled(False)
+            edit_button.clicked.connect(
+                lambda _checked=False, index=i: self._routine_edit_clicked(index))
 
             delete_button = QPushButton("✕")
             delete_button.setFixedWidth(28)
@@ -480,9 +489,11 @@ class ManualControlPanel(QGroupBox):
 
             row = QHBoxLayout()
             row.addWidget(button, 1)
+            row.addWidget(edit_button)
             row.addWidget(delete_button)
             grid.addLayout(row, 6 + i, 0, 1, 4)
             self.routine_buttons.append(button)
+            self.routine_edit_buttons.append(edit_button)
             self.routine_delete_buttons.append(delete_button)
         self._routines = [None] * self.ROUTINE_SLOTS  # None = empty/teach slot
 
@@ -625,31 +636,37 @@ class ManualControlPanel(QGroupBox):
         """
         self._routines = list(routines[:self.ROUTINE_SLOTS])
         self._routines += [None] * (self.ROUTINE_SLOTS - len(self._routines))
-        for button, delete_button, entry in zip(
-                self.routine_buttons, self.routine_delete_buttons, self._routines):
+        for button, edit_button, delete_button, entry in zip(
+                self.routine_buttons, self.routine_edit_buttons,
+                self.routine_delete_buttons, self._routines):
             if entry is None:
                 button.setText("+ Teach New Routine")
                 button.setToolTip(
                     "Pose the robot by hand or with the pads, then save it "
                     "here as a new routine.")
+                edit_button.setVisible(False)
                 delete_button.setVisible(False)
             else:
                 name, _path = entry
                 button.setText(name)
                 button.setToolTip(f"Play '{name}'.")
+                edit_button.setVisible(True)
                 delete_button.setVisible(True)
 
     def set_saved_routines_enabled(self, enabled):
         """
-        Playing, deleting or teaching a routine all need a connected robot -
-        the empty "+ Teach" slots are gated the same as the filled ones
-        rather than always being clickable, since a click on any of them
-        eventually needs to talk to Q8Bot.
+        Playing, editing, deleting or teaching a routine all need a
+        connected robot - the empty "+ Teach" slots are gated the same as
+        the filled ones rather than always being clickable, since a click
+        on any of them eventually needs to talk to Q8Bot.
         """
         for button in self.routine_buttons:
             button.setEnabled(enabled)
-        for i, delete_button in enumerate(self.routine_delete_buttons):
-            delete_button.setEnabled(enabled and self._routines[i] is not None)
+        for i, (edit_button, delete_button) in enumerate(
+                zip(self.routine_edit_buttons, self.routine_delete_buttons)):
+            filled = self._routines[i] is not None
+            edit_button.setEnabled(enabled and filled)
+            delete_button.setEnabled(enabled and filled)
 
     def _routine_slot_clicked(self, index):
         entry = self._routines[index]
@@ -658,6 +675,12 @@ class ManualControlPanel(QGroupBox):
         else:
             _name, path = entry
             self.routine_play_requested.emit(path)
+
+    def _routine_edit_clicked(self, index):
+        entry = self._routines[index]
+        if entry is not None:
+            _name, path = entry
+            self.routine_edit_requested.emit(path)
 
     def _routine_delete_clicked(self, index):
         entry = self._routines[index]
