@@ -44,6 +44,7 @@ from .panels import (
     ManualControlPanel,
     RobotInfoPanel,
 )
+from .firmware_dialog import FirmwareDialog
 from .teach_dialog import TeachRoutineDialog
 from .viewer import ViewerPanel
 from .widgets import StatusDot
@@ -126,6 +127,7 @@ class MainWindow(QMainWindow):
         self.connection.gamepad_connect_requested.connect(self._connect_gamepad)
         self.connection.gamepad_disconnect_requested.connect(self._disconnect_gamepad)
         self.connection.mode_changed.connect(self._on_mode_changed)
+        self.connection.flash_firmware_requested.connect(self._open_firmware_dialog)
         self.manual.gait_selected.connect(self._select_gait)
         self.manual.joint_mode_requested.connect(self._joint_mode_requested)
         self.manual.jump_requested.connect(self._manual_jump)
@@ -209,6 +211,18 @@ class MainWindow(QMainWindow):
         self.manual.set_saved_routines_enabled(False)
         self._set_status("Not connected")
         Q8Logger.info("Disconnected.")
+
+    def _open_firmware_dialog(self):
+        """
+        Modal, so nothing else here touches a serial port mid-flash. The
+        dialog only asks to disconnect if it's about to flash the very port
+        this window holds open (the controller) - flashing the robot over
+        its own USB cable can happen with the controller still connected.
+        """
+        busy_port = self._port if self.bot is not None else None
+        FirmwareDialog(busy_port=busy_port, release_port=self._disconnect_robot,
+                       parent=self).exec()
+        self.connection.port_combo.repopulate()   # a reflashed board re-enumerates
 
     #-------------------#
     # Gamepad           #
