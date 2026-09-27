@@ -2,10 +2,12 @@
 Written by yufeng.wu0902@gmail.com
 
 Copies the latest PlatformIO builds into q8bot/firmware/, where the desktop
-app's Flash Firmware window looks for them. Run after building:
+app's Flash Firmware window looks for them. Expects q8botone-firmware
+checked out next to this repo (the q8botone workspace layout). Run after
+building:
 
-    cd firmware/q8bot_robot && pio run
-    cd firmware/q8bot_controller && pio run
+    cd ../q8botone-firmware/robot && pio run
+    cd ../q8botone-firmware/controller && pio run
     python update_firmware_bins.py
 
 Refuses to copy a file whose embedded FIRMWARE_ID doesn't match where it's
@@ -19,10 +21,10 @@ from pathlib import Path
 
 from q8bot.firmware_flasher import FIRMWARE_DIR, bin_path, read_bin_target
 
-REPO = Path(__file__).resolve().parent.parent
+FIRMWARE_REPO = Path(__file__).resolve().parent.parent / 'q8botone-firmware'
 BUILDS = {
-    'robot': REPO / 'firmware' / 'q8bot_robot' / '.pio' / 'build' / 'robot_permanent' / 'firmware.bin',
-    'controller': REPO / 'firmware' / 'q8bot_controller' / '.pio' / 'build' / 'controller_permanent' / 'firmware.bin',
+    'robot': FIRMWARE_REPO / 'robot' / '.pio' / 'build' / 'robot_permanent' / 'firmware.bin',
+    'controller': FIRMWARE_REPO / 'controller' / '.pio' / 'build' / 'controller_permanent' / 'firmware.bin',
 }
 
 

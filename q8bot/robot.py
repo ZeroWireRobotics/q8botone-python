@@ -101,7 +101,7 @@ MAX_STREAM_CATCHUP = 4
 DEFAULT_ROUTINE_DURATION_MS = 1000  # time move_all() takes to reach the pose
 DEFAULT_ROUTINE_HOLD_S = 0.0        # pause after arriving, before the next
 
-# Matches firmware/q8bot_robot/src/main.cpp's jumpEnabledNow gate (pct >= 50).
+# Matches q8botone-firmware/robot/src/main.cpp's jumpEnabledNow gate (pct >= 50).
 # The robot enforces this itself regardless - a raw JUMP command below the
 # threshold is silently dropped, no reply either way - so this only exists to
 # let a host skip jump()'s multi-second settle wait for a jump that was never

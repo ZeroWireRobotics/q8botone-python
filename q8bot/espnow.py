@@ -154,7 +154,7 @@ class q8_espnow:
         #
         # The trailing byte was a "record this frame" flag. Recording is gone,
         # but the byte stays in the layout so the controller's own MOVE
-        # builder (firmware/q8bot_controller) doesn't have to change with it.
+        # builder (q8botone-firmware/controller) doesn't have to change with it.
         try:
             angles_tenths = [round(a * 10) for a in joints_pos]
             payload = struct.pack('<8hHB', *angles_tenths, dur, 0)

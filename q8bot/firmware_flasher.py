@@ -44,8 +44,8 @@ import serial
 FIRMWARE_DIR = Path(__file__).resolve().parent / 'firmware'
 TARGETS = ('robot', 'controller')
 
-# Must match FIRMWARE_ID in firmware/q8bot_robot/src/main.cpp and
-# firmware/q8bot_controller/src/main.cpp.
+# Must match FIRMWARE_ID in q8botone-firmware/robot/src/main.cpp and
+# q8botone-firmware/controller/src/main.cpp.
 _MARKER = re.compile(rb'Q8BOT_FW\|([A-Za-z0-9_-]+)')
 # The serial reply is matched only once its newline has arrived - reads come
 # in chunks, and matching mid-line could catch "Q8BOT_FW|rob" before the

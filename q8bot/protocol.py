@@ -29,7 +29,7 @@ class CmdType(IntEnum):
     GAIT_STOP = 0x07  # no payload - stop autonomous gait, hand control back to raw MOVE
     GREET = 0x08      # no payload - scripted greeting sequence, runs entirely on the robot
     HOST_CONNECTED = 0x09  # no payload - controller-local only, never forwarded to the robot;
-                            # tells q8bot_controller to switch from independent (gamepad) mode
+                            # tells the controller firmware to switch from independent (gamepad) mode
                             # to relay mode
     LED_BRIGHTNESS = 0x0A  # {brightness: uint8, 0-255} - sets & persists the robot's RGB LED brightness
     TELEMETRY_REQUEST = 0x0B  # no payload - ask for one joint snapshot, answered with TELEMETRY_REPLY
@@ -43,7 +43,7 @@ class ReplyType(IntEnum):
 
 
 # Canonical direction ordering for GAIT_RUN's direction_id (0-11). Must match
-# the order firmware/q8bot_robot/include/gaitTables.h's *_DIRECTIONS arrays
+# the order q8botone-firmware/robot/include/gaitTables.h's *_DIRECTIONS arrays
 # use (see export_gait_tables.py) and the firmware protocol.h comment.
 DIRECTION_ORDER = [
     'f', 'b', 'l', 'r',
@@ -72,7 +72,7 @@ GAIT_NAME_TO_ID = {name: gait_id for gait_id, name in GAIT_IDS.items()}
 
 
 # TELEMETRY_REPLY payload: all 8 joints, 56 bytes. Must match the
-# TelemetryPayload struct in firmware/q8bot_robot/include/protocol.h.
+# TelemetryPayload struct in q8botone-firmware/robot/include/protocol.h.
 #
 # Position and current are read fresh on every request; temperature is
 # whatever the robot last sampled (it refreshes on its own ~1s timer), since
