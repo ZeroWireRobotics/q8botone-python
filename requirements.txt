@@ -1,18 +1,27 @@
-# Q8bot Python Dependencies
+# GENERATED from pyproject.toml by update_requirements.py - do not edit by hand.
+# Change dependencies in pyproject.toml, then run: python update_requirements.py
+# Same dependencies as: pip install -e ".[gui]"
 
-# Talking to the robot (the only hard requirement of the gait/kinematics core)
+# Core library
+# The library core - gaits, kinematics, protocol, Q8Bot - needs nothing else.
 pyserial>=3.5
 
-# Keyboard/gamepad input and the operate.py window. Not needed to generate
-# gaits, solve IK, or drive the robot from a script.
+# [gui] extra
+# The desktop control window (q8bot.ui). pygame comes too - gamepad
+# enumeration reuses control_config.py's per-controller mappings.
+PySide6>=6.6
 pygame>=2.5.2
+pyqtgraph>=0.13
+PyOpenGL>=3.1
+numpy>=1.26
+esptool>=4.7
 
-# Optional - only k_solver.fk_solve() needs scipy, and nothing on the control
-# path calls it. Install if you want forward kinematics:
+# ---- Optional extras, not installed by this file ----
+
+# [app] extra
+# Keyboard/gamepad input and the operate.py window.
+# pygame>=2.5.2
+
+# [fk] extra
+# Only k_solver.fk_solve() needs this, and it imports it on demand.
 # scipy>=1.11.4
-
-# Build tools (optional - only needed for creating executable)
-# pyinstaller>=6.0.0
-
-# Note: esptool is used for flashing ESP32C3, but not imported in Python code
-# Install separately if needed: pip install esptool>=4.0
