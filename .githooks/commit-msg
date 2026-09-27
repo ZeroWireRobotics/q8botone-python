@@ -1,0 +1,16 @@
+#!/bin/sh
+# Adds the version trailers prepare-commit-msg worked out, now that the
+# message is final. Skipped for an empty message, so leaving the editor empty
+# still aborts the commit. Enabled per clone with:
+#     git config core.hooksPath .githooks
+
+trailers="$(git rev-parse --git-dir)/q8-version-trailers"
+[ -f "$trailers" ] || exit 0
+
+# Any text besides comments and blank lines, above a `commit -v` scissors line?
+if awk '/^# -+ >8 -+$/ { exit } !/^#/ && NF { found = 1; exit } END { exit !found }' "$1"; then
+    while IFS= read -r trailer; do
+        git interpret-trailers --in-place --if-exists replace --trailer "$trailer" "$1"
+    done < "$trailers"
+fi
+rm -f "$trailers"

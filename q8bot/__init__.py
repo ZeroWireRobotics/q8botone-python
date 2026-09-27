@@ -31,6 +31,7 @@ from .protocol import (
     DIRECTION_TO_ID,
     GAIT_IDS,
     GAIT_NAME_TO_ID,
+    PROTOCOL_VERSION,
     CmdType,
     ReplyType,
 )
@@ -52,6 +53,7 @@ __all__ = [
     'gait_info',
     'k_solver',
     # wire protocol
+    'PROTOCOL_VERSION',
     'CmdType',
     'ReplyType',
     'GAIT_IDS',

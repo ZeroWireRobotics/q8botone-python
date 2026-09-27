@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Shell hooks must keep LF endings on Windows checkouts (core.autocrlf), or sh chokes on the CRs
+.githooks/* text eol=lf

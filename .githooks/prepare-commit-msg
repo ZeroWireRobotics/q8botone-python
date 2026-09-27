@@ -1,0 +1,44 @@
+#!/bin/sh
+# Works out this commit's version trailers from what's staged; commit-msg
+# adds them once the message is written. Enabled per clone with:
+#     git config core.hooksPath .githooks
+#
+#     Python-Version: unreleased, after v0.1.0   (or "0.2.0, not tagged yet" once
+#                                                 q8bot.__version__ is bumped)
+#     Bundled-Firmware: 0.1.0                    (the versions inside q8bot/firmware/*.bin)
+#     Protocol-Version: 1                        (PROTOCOL_VERSION in q8bot/protocol.py)
+#
+# Merges and squashes get no trailers.
+
+out="$(git rev-parse --git-dir)/q8-version-trailers"
+rm -f "$out"
+case "$2" in merge|squash) exit 0 ;; esac
+
+version=$(git show :q8bot/__init__.py 2>/dev/null |
+          sed -n "s/^__version__ *= *['\"]\([^'\"]*\)['\"].*/\1/p" | head -n 1)
+if [ -z "$version" ]; then
+    python="unknown"
+elif git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+    python="unreleased, after v$version"
+else
+    python="$version, not tagged yet"
+fi
+
+bundled_of() {
+    git cat-file -e ":q8bot/firmware/$1.bin" 2>/dev/null || { echo missing; return; }
+    found=$(git show ":q8bot/firmware/$1.bin" | grep -ao "Q8BOT_FW|$1|[A-Za-z0-9._+-]*" | head -n 1 | cut -d'|' -f3)
+    echo "${found:-unversioned}"
+}
+robot=$(bundled_of robot)
+controller=$(bundled_of controller)
+if [ "$robot" = "$controller" ]; then
+    bundled=$robot
+else
+    bundled="robot $robot, controller $controller"
+fi
+
+protocol=$(git show :q8bot/protocol.py 2>/dev/null |
+           sed -n 's/^PROTOCOL_VERSION *= *\([0-9][0-9]*\).*/\1/p' | head -n 1)
+
+printf 'Python-Version: %s\nBundled-Firmware: %s\nProtocol-Version: %s\n' \
+    "$python" "$bundled" "${protocol:-none}" > "$out"

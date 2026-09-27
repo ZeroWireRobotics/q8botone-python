@@ -6,12 +6,19 @@ Binary framed wire protocol shared by the host, controller, and robot:
     [START=0xAA][MSG_TYPE][LENGTH][PAYLOAD...][CRC_LO][CRC_HI]
 
 CRC-16/ARC (poly 0x8005, reflected 0xA001, init 0x0000) is computed over
-MSG_TYPE + LENGTH + PAYLOAD. The C++ side (firmware/*/include/protocol.h)
-must stay in sync with this module.
+MSG_TYPE + LENGTH + PAYLOAD. The C++ side
+(q8botone-firmware/{robot,controller}/include/protocol.h) must stay in sync
+with this module.
 '''
 
 import struct
 from enum import IntEnum
+
+# Wire protocol version, shared by host, controller and robot. Bump it for
+# any change the other side has to know about: a new or changed command or
+# reply, a payload layout, gait/direction IDs. Must equal protocol.h's
+# PROTOCOL_VERSION. Not yet exchanged or checked on connect.
+PROTOCOL_VERSION = 1
 
 START_BYTE = 0xAA
 _HEADER_LEN = 2       # msg_type, length
