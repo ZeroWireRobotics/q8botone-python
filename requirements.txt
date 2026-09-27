@@ -1,0 +1,18 @@
+# Q8bot Python Dependencies
+
+# Talking to the robot (the only hard requirement of the gait/kinematics core)
+pyserial>=3.5
+
+# Keyboard/gamepad input and the operate.py window. Not needed to generate
+# gaits, solve IK, or drive the robot from a script.
+pygame>=2.5.2
+
+# Optional - only k_solver.fk_solve() needs scipy, and nothing on the control
+# path calls it. Install if you want forward kinematics:
+# scipy>=1.11.4
+
+# Build tools (optional - only needed for creating executable)
+# pyinstaller>=6.0.0
+
+# Note: esptool is used for flashing ESP32C3, but not imported in Python code
+# Install separately if needed: pip install esptool>=4.0
