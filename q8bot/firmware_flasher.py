@@ -7,11 +7,16 @@ Both are the same XIAO ESP32-C3 board with the same USB VID/PID, so nothing
 about the port says which one is plugged in - and robot firmware on the
 controller (or the reverse) is the mistake worth preventing. Two checks:
 
-- The file: each firmware embeds its FIRMWARE_ID ("Q8BOT_FW|robot" or
-  "Q8BOT_FW|controller") as a string literal, so read_bin_target() can read
-  a .bin's intended device straight out of it.
+- The file: each firmware embeds its FIRMWARE_ID ("Q8BOT_FW|robot|<version>"
+  or "Q8BOT_FW|controller|<version>") as a string literal, so
+  read_bin_identity() can read a .bin's intended device straight out of it.
 - The device: both firmwares answer an 'i' over serial with that same line,
   so identify_device() can ask what's actually plugged in.
+
+The version (from `git describe` at build time, e.g. "0.1.0" or
+"0.1.0-3-gabc1234-dirty") is only reported, never used to decide anything.
+Firmware from before versioning sends the device alone; its version reads
+as None.
 
 What the device says decides what happens (the board being an ESP32-C3 at
 all is already established by it showing up in XiaoPortFinder's VID/PID-
@@ -35,23 +40,30 @@ import re
 import subprocess
 import sys
 import time
+from collections import namedtuple
 from pathlib import Path
 
 import serial
 
 # Where the app looks for firmware - refreshed from the PlatformIO build
-# output by python-tools/update_firmware_bins.py.
+# output by update_firmware_bins.py.
 FIRMWARE_DIR = Path(__file__).resolve().parent / 'firmware'
 TARGETS = ('robot', 'controller')
 
 # Must match FIRMWARE_ID in q8botone-firmware/robot/src/main.cpp and
-# q8botone-firmware/controller/src/main.cpp.
-_MARKER = re.compile(rb'Q8BOT_FW\|([A-Za-z0-9_-]+)')
+# q8botone-firmware/controller/src/main.cpp: "Q8BOT_FW|<device>[|<version>]".
+_ID = rb'Q8BOT_FW\|([A-Za-z0-9_-]+)(?:\|([A-Za-z0-9._+-]+))?'
+_MARKER = re.compile(_ID)
 # The serial reply is matched only once its newline has arrived - reads come
 # in chunks, and matching mid-line could catch "Q8BOT_FW|rob" before the
 # rest shows up, then refuse it as an unknown device.
-_REPLY = re.compile(rb'Q8BOT_FW\|([A-Za-z0-9_-]+)\r?\n')
+_REPLY = re.compile(_ID + rb'\r?\n')
 _IDENTIFY_COMMAND = b'i'
+
+# What a firmware says it is: target is the device name ('robot',
+# 'controller', or whatever else it claims), version its build version, or
+# None for firmware from before versioning.
+FirmwareIdentity = namedtuple('FirmwareIdentity', 'target version')
 
 CHIP = 'esp32c3'
 APP_OFFSET = '0x10000'   # application image only - bootloader and partition table never change between builds
@@ -65,20 +77,27 @@ def bin_path(target):
     return FIRMWARE_DIR / f'{target}.bin'
 
 
-def read_bin_target(path):
+def _identity(match):
+    version = match.group(2)
+    return FirmwareIdentity(match.group(1).decode(), version.decode() if version else None)
+
+
+def read_bin_identity(path):
     """
-    Which device a firmware file is for, read from its embedded marker.
+    Which device a firmware file is for, and its version, read from its
+    embedded marker.
 
     Returns:
-        'robot', 'controller', or None - no marker at all (a build from
-        before FIRMWARE_ID existed, or not a q8bot firmware), or markers for
-        more than one device, which no genuine build contains.
+        FirmwareIdentity with target 'robot' or 'controller', or None - no
+        marker at all (a build from before FIRMWARE_ID existed, or not a
+        q8bot firmware), or more than one distinct marker, which no genuine
+        build contains.
     """
-    found = {m.group(1).decode() for m in _MARKER.finditer(Path(path).read_bytes())}
+    found = {_identity(m) for m in _MARKER.finditer(Path(path).read_bytes())}
     if len(found) != 1:
         return None
-    target = found.pop()
-    return target if target in TARGETS else None
+    identity = found.pop()
+    return identity if identity.target in TARGETS else None
 
 
 def identify_device(port, timeout=2.0):
@@ -92,11 +111,10 @@ def identify_device(port, timeout=2.0):
     until the timeout).
 
     Returns:
-        The name the device identified as - normally 'robot' or
-        'controller', but returned as-is even when it's neither, so a
-        device that explicitly says it's something else can be told apart
-        from one that said nothing. None if nothing answered in time
-        (legacy firmware).
+        FirmwareIdentity. Its target is normally 'robot' or 'controller',
+        but returned as-is even when it's neither, so a device that
+        explicitly says it's something else can be told apart from one that
+        said nothing. None if nothing answered in time (legacy firmware).
     Raises:
         serial.SerialException if the port never opened at all - usually
         another program (or this one) still holds it.
@@ -116,7 +134,7 @@ def identify_device(port, timeout=2.0):
                     received += link.read(256)
                     match = _REPLY.search(received)
                     if match:
-                        return match.group(1).decode()
+                        return _identity(match)
                 return None
         except serial.SerialException as exc:
             last_error = exc

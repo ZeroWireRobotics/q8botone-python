@@ -38,6 +38,11 @@ OK_COLOR = '#1a7f37'
 ERROR_COLOR = '#b3262b'
 
 
+def _version_text(version):
+    # None is firmware from before versioning - it only reports the device.
+    return f"v{version}" if version else "unversioned"
+
+
 class FirmwareDialog(QDialog):
     """
     Modal: nothing else in the window should be driving a serial port while
@@ -48,11 +53,11 @@ class FirmwareDialog(QDialog):
     painting through a ~10s write.
     """
 
-    _identified = Signal(object, object)   # device target or None, error or None
+    _identified = Signal(object, object)   # FirmwareIdentity or None, error or None
     _line = Signal(str)
     _progress = Signal(float)
     _flashed = Signal(bool)
-    _verified = Signal(object)             # device target or None
+    _verified = Signal(object)             # FirmwareIdentity or None
 
     def __init__(self, busy_port=None, release_port=None, parent=None):
         """
@@ -70,6 +75,7 @@ class FirmwareDialog(QDialog):
         self._port = None
         self._target = None
         self._file_ok = False   # set by _update_file_info(); read by _update_buttons(), which runs first
+        self._file_version = None
 
         self.target_combo = QComboBox()
         for target in flasher.TARGETS:
@@ -147,12 +153,15 @@ class FirmwareDialog(QDialog):
         if not path.exists():
             self._set_label(self.file_label, f"Missing: {path.name} - run update_firmware_bins.py", ERROR_COLOR)
         else:
-            found = flasher.read_bin_target(path)
+            identity = flasher.read_bin_identity(path)
+            found = identity.target if identity else None
             built = time.strftime('%Y-%m-%d %H:%M', time.localtime(path.stat().st_mtime))
             if found == target:
                 self._file_ok = True
+                self._file_version = identity.version
                 self._set_label(self.file_label,
-                                f"{path.name} - {path.stat().st_size // 1024} KB, built {built}", None)
+                                f"{path.name} - {_version_text(identity.version)}, "
+                                f"{path.stat().st_size // 1024} KB, built {built}", None)
             elif found is None:
                 self._set_label(self.file_label,
                                 f"{path.name} has no device marker - rebuild it from current firmware",
@@ -215,7 +224,7 @@ class FirmwareDialog(QDialog):
         except Exception as exc:
             self._identified.emit(None, exc)
 
-    def _on_identified(self, device, error):
+    def _on_identified(self, identity, error):
         name = TARGET_LABELS[self._target]
         if error is not None:
             self._set_busy(False)
@@ -224,8 +233,10 @@ class FirmwareDialog(QDialog):
 
         # The board is an ESP32-C3 either way (see XiaoPortFinder) - what
         # differs is what its firmware says, or whether it says anything.
+        device = identity.target if identity else None
         if device == self._target:
-            self._status(f"Confirmed {name}. Flashing...")
+            self._status(f"Confirmed {name} on {_version_text(identity.version)}. "
+                         f"Flashing {_version_text(self._file_version)}...")
 
         elif device in TARGET_LABELS:
             self._refuse(
@@ -295,11 +306,12 @@ class FirmwareDialog(QDialog):
         except Exception:
             self._verified.emit(None)
 
-    def _on_verified(self, device):
+    def _on_verified(self, identity):
         self._set_busy(False)
         name = TARGET_LABELS[self._target]
-        if device == self._target:
-            self._status(f"Done - the {name} restarted on the new firmware.", OK_COLOR)
+        if identity is not None and identity.target == self._target:
+            self._status(f"Done - the {name} restarted on {_version_text(identity.version)}.",
+                         OK_COLOR)
         else:
             self._status(f"Flashed, but the {name} didn't report back yet. Unplug and "
                          f"replug it if it doesn't start normally.")
