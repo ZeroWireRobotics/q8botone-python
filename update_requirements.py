@@ -8,13 +8,16 @@ dependencies plus the extras in INCLUDED_EXTRAS (the same set as
 extras are listed commented out. Comments written above each dependency list
 in pyproject.toml are carried over.
 
-    python update_requirements.py          # rewrite requirements.txt
-    python update_requirements.py --check  # exit 1 if it's out of date
+    python update_requirements.py                 # rewrite requirements.txt
+    python update_requirements.py --check         # exit 1 if it's out of date
+    python update_requirements.py --check-staged  # same, for what's staged in git
+                                                  # (the pre-commit hook runs this)
 
 Needs Python 3.11+ (tomllib).
 '''
 
 import re
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -46,8 +49,8 @@ def _block(title, notes, deps, commented=False):
     return lines
 
 
-def render():
-    text = PYPROJECT.read_text(encoding='utf-8')
+def render(text):
+    '''requirements.txt's contents for the given pyproject.toml text.'''
     project = tomllib.loads(text)['project']
     notes = _key_comments(text)
     extras = project.get('optional-dependencies', {})
@@ -76,8 +79,22 @@ def render():
     return '\n'.join(lines) + '\n'
 
 
+def _staged(path):
+    '''A file's staged contents ('' if it isn't in the index), LF-normalized.'''
+    result = subprocess.run(['git', 'show', f':{path.name}'], cwd=REPO,
+                            capture_output=True, encoding='utf-8')
+    return result.stdout.replace('\r\n', '\n') if result.returncode == 0 else ''
+
+
 def main(argv):
-    wanted = render()
+    if '--check-staged' in argv:
+        if _staged(REQUIREMENTS) == render(_staged(PYPROJECT)):
+            return 0
+        print('Staged requirements.txt does not match staged pyproject.toml - run: '
+              'python update_requirements.py, then git add requirements.txt')
+        return 1
+
+    wanted = render(PYPROJECT.read_text(encoding='utf-8'))
     current = REQUIREMENTS.read_text(encoding='utf-8') if REQUIREMENTS.exists() else ''
     if current == wanted:
         print('requirements.txt is up to date')

@@ -1,0 +1,20 @@
+#!/bin/sh
+# Stops a commit whose staged requirements.txt doesn't match its staged
+# pyproject.toml - requirements.txt is generated (see update_requirements.py),
+# and this catches pyproject.toml edits made without regenerating it. Only
+# runs when either file is in the commit; `git commit --no-verify` skips it.
+# Enabled per clone with:
+#     git config core.hooksPath .githooks
+
+git diff --cached --name-only | grep -qxE 'pyproject\.toml|requirements\.txt' || exit 0
+
+root=$(git rev-parse --show-toplevel)
+python=python
+for candidate in "$root/venv/Scripts/python.exe" "$root/venv/bin/python"; do
+    [ -x "$candidate" ] && python=$candidate && break
+done
+
+"$python" "$root/update_requirements.py" --check-staged || {
+    echo "Commit stopped: requirements.txt is out of date (see above)." >&2
+    exit 1
+}
