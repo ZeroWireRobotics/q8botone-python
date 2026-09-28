@@ -23,6 +23,7 @@ import sys
 import time
 from pathlib import Path
 
+import check_firmware_bins
 from q8bot.firmware_flasher import FIRMWARE_DIR, bin_path, read_bin_identity
 
 FIRMWARE_REPO = Path(__file__).resolve().parent.parent / 'q8botone-firmware'
@@ -54,6 +55,9 @@ def main():
         print(f"{target:<10} copied {version} ({source.stat().st_size:,} bytes, built {built})")
         if not RELEASE_VERSION.match(version):
             print(f"{'':<10} WARNING: not a tagged release build - tag and rebuild before shipping")
+    # The same check every package build runs - better to hear it now.
+    print()
+    print('\n'.join(check_firmware_bins.check()[1]))
     return 1 if failed else 0
 
 

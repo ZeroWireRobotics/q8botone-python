@@ -1,6 +1,9 @@
 [build-system]
 requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+# setuptools, plus a check that the bundled firmware is the latest release -
+# every build fails otherwise (see build_backend.py, check_firmware_bins.py).
+build-backend = "build_backend"
+backend-path = ["."]
 
 [project]
 name = "q8bot"
@@ -31,11 +34,16 @@ fk = ["scipy>=1.11.4"]
 q8bot-gui = "q8bot.ui:main"
 
 [tool.setuptools]
-packages = ["q8bot", "q8bot.ui"]
+# assets/ and firmware/ hold only data, but setuptools treats every
+# directory in a package as a package - listing them is what keeps their
+# files shipping (its warning says future versions would drop them otherwise).
+packages = ["q8bot", "q8bot.ui", "q8bot.assets", "q8bot.firmware"]
 
 [tool.setuptools.dynamic]
 version = { attr = "q8bot.__version__" }
 
 [tool.setuptools.package-data]
-# The 3D viewer's mesh, so it survives a pip install (see q8bot/assets).
-"q8bot" = ["assets/*.stl"]
+# The 3D viewer's mesh, and the firmware the Flash Firmware window writes,
+# so both survive a (non-editable) pip install.
+"q8bot.assets" = ["*.stl"]
+"q8bot.firmware" = ["*.bin"]
