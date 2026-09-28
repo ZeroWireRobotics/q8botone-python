@@ -7,7 +7,9 @@ tag in q8botone-firmware (expected next to this repo - the workspace layout).
 A between-tag, dirty, or unversioned build fails too. Runs on every package
 build (see build_backend.py), and by hand:
 
-    python check_firmware_bins.py    # exit 1 if the bundled firmware is stale
+    python check_firmware_bins.py             # exit 1 if the bundled firmware is stale
+    python check_firmware_bins.py --staged    # same, for the bins staged in git
+                                              # (the pre-commit hook runs this)
 
 Passes with a "skipped" note when there's no q8botone-firmware to compare
 against - e.g. a pip install straight from GitHub, where it couldn't be
@@ -30,12 +32,23 @@ FIRMWARE_REPO = REPO.parent / 'q8botone-firmware'
 TARGETS = ('robot', 'controller')
 
 
-def bundled_version(target):
-    '''The version inside q8bot/firmware/<target>.bin (same marker firmware_flasher reads).'''
+def bundled_version(target, staged=False):
+    '''
+    The version inside q8bot/firmware/<target>.bin (same marker
+    firmware_flasher reads) - the working-tree file, or the staged one.
+    '''
     path = FIRMWARE_DIR / f'{target}.bin'
-    if not path.exists():
+    if staged:
+        result = subprocess.run(['git', 'show', f':{path.relative_to(REPO).as_posix()}'],
+                                cwd=REPO, capture_output=True)
+        if result.returncode != 0:
+            return 'missing'
+        data = result.stdout
+    elif path.exists():
+        data = path.read_bytes()
+    else:
         return 'missing'
-    match = re.search(rb'Q8BOT_FW\|' + target.encode() + rb'\|([A-Za-z0-9._+-]+)', path.read_bytes())
+    match = re.search(rb'Q8BOT_FW\|' + target.encode() + rb'\|([A-Za-z0-9._+-]+)', data)
     return match.group(1).decode() if match else 'unversioned'
 
 
@@ -53,8 +66,10 @@ def latest_release():
     return next((tag for tag in tags if re.fullmatch(r'v\d+\.\d+\.\d+', tag)), None)
 
 
-def check():
+def check(staged=False):
     '''
+    staged: check the bins staged in git instead of the working-tree files.
+
     Returns:
         (ok, lines) - ok is False only when the bundled firmware is provably
         not the latest release; lines explain the result either way.
@@ -67,7 +82,7 @@ def check():
 
     latest = tag[1:]
     stale = [f'{target}.bin is {version}, not the latest firmware release {latest}'
-             for target in TARGETS if (version := bundled_version(target)) != latest]
+             for target in TARGETS if (version := bundled_version(target, staged)) != latest]
     if stale:
         return False, stale + [
             f'Fix: build both firmwares at {tag} with no local changes (their build log '
@@ -85,7 +100,7 @@ def check():
 
 
 def main():
-    ok, lines = check()
+    ok, lines = check(staged='--staged' in sys.argv[1:])
     print('\n'.join(lines))
     return 0 if ok else 1
 
