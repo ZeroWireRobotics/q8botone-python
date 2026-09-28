@@ -18,10 +18,6 @@ esptool>=4.7
 
 # ---- Optional extras, not installed by this file ----
 
-# [app] extra
-# Keyboard/gamepad input and the operate.py window.
-# pygame>=2.5.2
-
 # [fk] extra
 # Only k_solver.fk_solve() needs this, and it imports it on demand.
 # scipy>=1.11.4
