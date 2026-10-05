@@ -12,13 +12,14 @@ with this module.
 '''
 
 import struct
+from collections import namedtuple
 from enum import IntEnum
 
 # Wire protocol version, shared by host, controller and robot. Bump it for
 # any change the other side has to know about: a new or changed command or
 # reply, a payload layout, gait/direction IDs. Must equal protocol.h's
 # PROTOCOL_VERSION. Not yet exchanged or checked on connect.
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2  # 2: SENSOR_REQUEST / SENSOR_REPLY
 
 START_BYTE = 0xAA
 _HEADER_LEN = 2       # msg_type, length
@@ -40,6 +41,7 @@ class CmdType(IntEnum):
                             # to relay mode
     LED_BRIGHTNESS = 0x0A  # {brightness: uint8, 0-255} - sets & persists the robot's RGB LED brightness
     TELEMETRY_REQUEST = 0x0B  # no payload - ask for one joint snapshot, answered with TELEMETRY_REPLY
+    SENSOR_REQUEST = 0x0C     # no payload - sample the robot's Qwiic sensors, answered with SENSOR_REPLY
 
 
 class ReplyType(IntEnum):
@@ -47,6 +49,7 @@ class ReplyType(IntEnum):
     BATTERY_REPLY = 0x81      # {percent: uint8, millivolts: uint16}
     RECORD_DATA_REPLY = 0x82  # retired alongside RECORD_SEND; do not reuse
     TELEMETRY_REPLY = 0x83    # one joint snapshot - see TELEMETRY_STRUCT
+    SENSOR_REPLY = 0x84       # every detected Qwiic sensor's reading - see parse_sensors
 
 
 # Canonical direction ordering for GAIT_RUN's direction_id (0-11). Must match
@@ -123,6 +126,101 @@ def parse_telemetry(payload: bytes):
         'current': values[8:16],
         'temperature': values[16:24],
     }
+
+
+# SENSOR_REPLY payload, little-endian. Must match the layout comment above
+# SensorKind in q8botone-firmware/robot/include/protocol.h:
+#
+#   uint32  t_ms     robot millis() when sampled
+#   uint8   count    sensor blocks that follow
+#   count x block:
+#     uint8    kind  sensor type - a key of SENSOR_KINDS
+#     uint8    addr  its I2C address, telling two of the same kind apart
+#     uint8    n     number of values that follow
+#     float32  values[n] (NaN while the sensor isn't answering)
+#
+# n travels with every block, so a kind this table doesn't know still
+# parses - adding a sensor type never changes the format.
+_SENSOR_HEADER = struct.Struct('<IB')
+_SENSOR_BLOCK_HEADER = struct.Struct('<BBB')
+
+# What each kind's values are, in the order the robot sends them. Must match
+# protocol.h's SensorKind.
+#
+#   values  ((name, unit), ...)
+#   plots   how to chart them: ((title, (value index, ...)), ...) - values
+#           sharing a plot share its axis, like an IMU's x/y/z. None plots
+#           each value on its own.
+SensorKind = namedtuple('SensorKind', 'name values plots', defaults=(None,))
+SENSOR_KINDS = {
+    1: SensorKind('INA237', (
+        ('Bus voltage', 'V'),
+        ('Shunt voltage', 'mV'),
+        ('Current', 'mA'),
+        ('Power', 'mW'),
+        ('Die temperature', '°C'),
+    )),
+    2: SensorKind('MPU6050', (
+        ('Accel X', 'm/s²'),
+        ('Accel Y', 'm/s²'),
+        ('Accel Z', 'm/s²'),
+        ('Gyro X', 'rad/s'),
+        ('Gyro Y', 'rad/s'),
+        ('Gyro Z', 'rad/s'),
+        ('Temperature', '°C'),
+    ), plots=(
+        ('Acceleration (m/s²)', (0, 1, 2)),
+        ('Rotation rate (rad/s)', (3, 4, 5)),
+        ('Temperature (°C)', (6,)),
+    )),
+}
+
+# One sensor's values from one SENSOR_REPLY (a tuple of floats, NaN while it
+# isn't answering), and the whole reply. A sensor is identified by
+# (kind, address) - stable across replies, so it can key a plotted series.
+SensorReading = namedtuple('SensorReading', 'kind address values')
+SensorSnapshot = namedtuple('SensorSnapshot', 't_ms sensors')
+
+
+def sensor_kind(kind, value_count):
+    """
+    SENSOR_KINDS[kind], or a generic stand-in for a kind this host doesn't
+    know yet (newer firmware), with one unnamed entry per value.
+    """
+    known = SENSOR_KINDS.get(kind)
+    if known is not None and len(known.values) == value_count:
+        return known
+    name = known.name if known is not None else f'Sensor kind {kind}'
+    return SensorKind(name, tuple((f'Value {i + 1}', '') for i in range(value_count)))
+
+
+def parse_sensors(payload: bytes):
+    """
+    Unpack a SENSOR_REPLY payload.
+
+    Returns:
+        SensorSnapshot(t_ms, sensors) - sensors is a tuple of SensorReading,
+        empty when the robot has no sensor attached. None if the payload is
+        malformed.
+    """
+    if len(payload) < _SENSOR_HEADER.size:
+        return None
+    t_ms, count = _SENSOR_HEADER.unpack_from(payload, 0)
+    pos = _SENSOR_HEADER.size
+    sensors = []
+    for _ in range(count):
+        if pos + _SENSOR_BLOCK_HEADER.size > len(payload):
+            return None
+        kind, address, n = _SENSOR_BLOCK_HEADER.unpack_from(payload, pos)
+        pos += _SENSOR_BLOCK_HEADER.size
+        if pos + 4 * n > len(payload):
+            return None
+        values = struct.unpack_from(f'<{n}f', payload, pos)
+        pos += 4 * n
+        sensors.append(SensorReading(kind, address, values))
+    if pos != len(payload):
+        return None
+    return SensorSnapshot(t_ms, tuple(sensors))
 
 
 # Matches q8Dynamixel.cpp's _deg2Dxl/_dxl2Deg exactly (_zeroOffset=4096,

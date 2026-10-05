@@ -29,6 +29,7 @@ import functools
 import math
 import threading
 import time
+from collections import deque
 from enum import Enum
 
 from . import routine_generator
@@ -42,6 +43,7 @@ from .protocol import (
     GAIT_NAME_TO_ID,
     ReplyType,
     parse_battery,
+    parse_sensors,
     parse_telemetry,
     ticks_to_degrees,
 )
@@ -85,6 +87,11 @@ MAX_REPLIES_PER_TICK = 8
 # default: a front end that displays it opts in (the desktop UI uses 10 Hz,
 # which costs the servo bus about one percent).
 DEFAULT_TELEMETRY_HZ = 0
+
+# Qwiic sensor readings work the same way: request/response, off by default.
+# History keeps the most recent snapshots for plotting - a minute at 10 Hz.
+DEFAULT_SENSOR_HZ = 0
+SENSOR_HISTORY_LENGTH = 600
 
 # Streaming advances the trajectory by elapsed time, not by one frame per
 # wakeup, so gait speed doesn't depend on how precisely the host can sleep -
@@ -203,6 +210,11 @@ class Q8Bot:
         self._telemetry = None
         self._telemetry_hz = DEFAULT_TELEMETRY_HZ
         self._telemetry_last_request = 0.0
+        self._sensors = None
+        self._sensors_received_at = None
+        self._sensor_history = deque(maxlen=SENSOR_HISTORY_LENGTH)
+        self._sensor_hz = DEFAULT_SENSOR_HZ
+        self._sensor_last_request = 0.0
         self._pos_x = 0.0
         self._pos_y = 0.0
         self._damping = False          # see set_joint_mode()/_damping_tick()
@@ -636,6 +648,45 @@ class Q8Bot:
         with self._reply_lock:
             return self._telemetry
 
+    @property
+    def sensor_hz(self):
+        """How often the robot's Qwiic sensors are read. 0 disables it."""
+        return self._sensor_hz
+
+    @sensor_hz.setter
+    def sensor_hz(self, hz):
+        self._sensor_hz = max(0.0, float(hz))
+
+    @property
+    def sensors(self):
+        """
+        The most recent sensor reading, or None if none has arrived.
+
+        A protocol.SensorSnapshot: t_ms (the robot's clock when sampled) and
+        sensors, a tuple of SensorReading(kind, address, values) - empty when
+        the robot has nothing attached. protocol.sensor_kind() names and
+        units each value. Needs sensor_hz > 0.
+        """
+        with self._reply_lock:
+            return self._sensors
+
+    @property
+    def sensor_age(self):
+        """Seconds since the last sensor reply arrived, or None if none has."""
+        with self._reply_lock:
+            received = self._sensors_received_at
+        return None if received is None else time.monotonic() - received
+
+    @property
+    def sensor_history(self):
+        """
+        The last SENSOR_HISTORY_LENGTH readings, oldest first, as a list of
+        SensorSnapshot - for plotting. Their t_ms is the robot's own clock,
+        so spacing reflects when each was sampled, not when it arrived.
+        """
+        with self._reply_lock:
+            return list(self._sensor_history)
+
     #-------------------#
     # Scripted routines #
     #-------------------#
@@ -895,6 +946,7 @@ class Q8Bot:
                 self._damping_tick()
 
             self._request_telemetry_if_due()
+            self._request_sensors_if_due()
             self._drain_replies()
 
     def _damping_tick(self):
@@ -973,6 +1025,16 @@ class Q8Bot:
         self._telemetry_last_request = now
         self._guard(self.link.request_telemetry)
 
+    def _request_sensors_if_due(self):
+        """Same as _request_telemetry_if_due(), for the Qwiic sensors."""
+        if self._sensor_hz <= 0:
+            return
+        now = time.monotonic()
+        if now - self._sensor_last_request < 1.0 / self._sensor_hz:
+            return
+        self._sensor_last_request = now
+        self._guard(self.link.request_sensors)
+
     def _drain_replies(self):
         self._guard(self._drain_replies_unguarded)
 
@@ -995,6 +1057,13 @@ class Q8Bot:
                 if sample is not None:
                     with self._reply_lock:
                         self._telemetry = sample
+            elif reply_type == ReplyType.SENSOR_REPLY:
+                snapshot = parse_sensors(payload)
+                if snapshot is not None:
+                    with self._reply_lock:
+                        self._sensors = snapshot
+                        self._sensors_received_at = time.monotonic()
+                        self._sensor_history.append(snapshot)
 
     def _run(self):
         next_tick = time.monotonic()

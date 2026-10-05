@@ -115,6 +115,14 @@ class q8_espnow:
         """
         return self._send(CmdType.TELEMETRY_REQUEST)
 
+    def request_sensors(self):
+        """
+        Ask for one reading of every sensor on the robot's Qwiic port. The
+        robot answers with a SENSOR_REPLY (see protocol.parse_sensors) -
+        including when it has none attached, which is how a host tells.
+        """
+        return self._send(CmdType.SENSOR_REQUEST)
+
     def send_jump(self):
         return self._send(CmdType.JUMP)
 
