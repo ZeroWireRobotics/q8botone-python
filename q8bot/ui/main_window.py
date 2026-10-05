@@ -36,6 +36,7 @@ from .. import routine_store
 from ..control_config import get_joystick_direction, get_joystick_magnitude
 from ..espnow import q8_espnow
 from ..helpers import Q8Logger
+from ..protocol import sensor_kind
 from ..robot import JUMP_BATTERY_THRESHOLD, JointMode, Q8Bot
 from .log_bridge import QueuedLogHandler
 from .panels import (
@@ -45,6 +46,7 @@ from .panels import (
     RobotInfoPanel,
 )
 from .firmware_dialog import FirmwareDialog
+from .sensor_window import SensorWindow
 from .teach_dialog import TeachRoutineDialog
 from .viewer import ViewerPanel
 from .widgets import StatusDot
@@ -71,6 +73,15 @@ ROBOT_SILENT_SECONDS = 8.0   # ~2 missed replies before we stop claiming it's th
 # so it only uses slack) and ESP-NOW about 2 KB/s.
 TELEMETRY_HZ = 10
 
+# Qwiic sensors: a slow request whenever a robot is connected keeps the
+# Robot Information status ("No sensor connected" / which sensor) current;
+# the Sensors window raises it while open. A robot whose firmware predates
+# sensor support (protocol < 2) ignores the request, so silence past
+# SENSOR_SILENT_SECONDS is reported rather than waited on forever.
+SENSOR_PRESENCE_HZ = 1
+SENSOR_LIVE_HZ = 10
+SENSOR_SILENT_SECONDS = 5.0
+
 # The move pad springs back through small values on release; ignore those
 # rather than firing a last twitch of movement on the way to centre.
 MOVE_PAD_DEADZONE = 0.15
@@ -96,6 +107,8 @@ class MainWindow(QMainWindow):
         self._shown_joint_mode = None  # what the joint mode slider is currently showing
         self._saved_routines = []    # [(name, path), ...] mirroring the reserved rows
         self._teach_dialog = None    # the open TeachRoutineDialog, or None
+        self._sensor_window = None   # the open SensorWindow, or None
+        self._plotted_snapshot = None  # the newest reading its plot has drawn
 
         self.connection = ConnectionPanel(self._list_gamepads)
         self.console = DebugConsole()
@@ -128,6 +141,7 @@ class MainWindow(QMainWindow):
         self.connection.gamepad_disconnect_requested.connect(self._disconnect_gamepad)
         self.connection.mode_changed.connect(self._on_mode_changed)
         self.connection.flash_firmware_requested.connect(self._open_firmware_dialog)
+        self.info.sensors_requested.connect(self._open_sensor_window)
         self.manual.gait_selected.connect(self._select_gait)
         self.manual.joint_mode_requested.connect(self._joint_mode_requested)
         self.manual.jump_requested.connect(self._manual_jump)
@@ -185,6 +199,8 @@ class MainWindow(QMainWindow):
         # request/response, so closing the window simply stops asking - there
         # is no streaming state left running on the robot.
         self.bot.telemetry_hz = TELEMETRY_HZ
+        self.bot.sensor_hz = SENSOR_PRESENCE_HZ
+        self.info.set_sensor_status("Sensors: checking...")
 
         self._shown_gait = self.bot.gait
         self.manual.set_gaits(self.bot.catalog, self._shown_gait)
@@ -202,6 +218,8 @@ class MainWindow(QMainWindow):
         self.connection.set_robot_status(StatusDot.OFF, "Not connected")
         self.info.set_battery(None)
         self.info.set_telemetry(None)
+        self.info.set_sensor_status("")
+        self._close_sensor_window()  # its readings come from this robot
         self.info.setEnabled(True)   # in case a routine had it greyed out
         self.manual.set_gaits([])
         self._shown_gait = None
@@ -319,6 +337,8 @@ class MainWindow(QMainWindow):
                 StatusDot.ERROR, "Connection lost", "The link dropped - check the cable.")
             self.info.set_battery(None)
             self.info.set_telemetry(None)
+            self.info.set_sensor_status("")
+            self._close_sensor_window()  # its readings come from this robot
             self.info.setEnabled(True)   # in case a routine had it greyed out
             self.manual.set_gaits([])
             self._shown_gait = None
@@ -332,6 +352,7 @@ class MainWindow(QMainWindow):
 
         self._poll_robot_liveness()
         self.info.set_telemetry(self.bot.telemetry)
+        self._poll_sensors()
         self._poll_joint_mode()
         # Telemetry itself stalls during a routine anyway - Q8Bot's tick
         # thread can't get the lock a routine holds for its whole duration,
@@ -721,6 +742,63 @@ class MainWindow(QMainWindow):
                 f"{silent_for:.0f}s ago.")
             self.info.set_battery(None)
             self._set_status(f"{self._port} open - robot not answering")
+
+    #-------------------#
+    # Qwiic sensors     #
+    #-------------------#
+
+    def _poll_sensors(self):
+        snapshot = self.bot.sensors
+        age = self.bot.sensor_age
+
+        if snapshot is None or age >= SENSOR_SILENT_SECONDS:
+            waited = time.monotonic() - self._connected_at
+            if snapshot is None and waited < SENSOR_SILENT_SECONDS:
+                self.info.set_sensor_status("Sensors: checking...")
+            else:
+                self.info.set_sensor_status(
+                    "Sensors: no reply",
+                    "The robot isn't answering sensor requests - it may be off "
+                    "or out of range, or its firmware may predate sensor support.")
+        elif not snapshot.sensors:
+            self.info.set_sensor_status(
+                "No sensor connected",
+                "Nothing supported on the robot's Qwiic port. Sensors are found "
+                "when the robot boots - plug one in, then power-cycle it.")
+        else:
+            names = ", ".join(sensor_kind(s.kind, len(s.values)).name for s in snapshot.sensors)
+            label = "Sensor" if len(snapshot.sensors) == 1 else "Sensors"
+            self.info.set_sensor_status(f"{label}: {names}", "Open the live readings.",
+                                        available=True)
+
+        if self._sensor_window is not None:
+            self._sensor_window.show_snapshot(snapshot, age)
+            # Strips redraw once per new reading, not on every 20 ms poll.
+            if snapshot is not None and snapshot is not self._plotted_snapshot:
+                self._plotted_snapshot = snapshot
+                self._sensor_window.show_history(self.bot.sensor_history)
+
+    def _open_sensor_window(self):
+        if self._sensor_window is not None:
+            self._sensor_window.raise_()
+            self._sensor_window.activateWindow()
+            return
+        self._sensor_window = SensorWindow(parent=self)
+        self._plotted_snapshot = None   # draw the history straight away
+        self._sensor_window.closed.connect(self._on_sensor_window_closed)
+        self._sensor_window.position_beside(self)
+        self._sensor_window.show()
+        if self.bot is not None:
+            self.bot.sensor_hz = SENSOR_LIVE_HZ
+
+    def _on_sensor_window_closed(self):
+        self._sensor_window = None
+        if self.bot is not None:
+            self.bot.sensor_hz = SENSOR_PRESENCE_HZ
+
+    def _close_sensor_window(self):
+        if self._sensor_window is not None:
+            self._sensor_window.close()   # fires closed -> _on_sensor_window_closed
 
     def _set_status(self, text):
         self.statusBar().showMessage(text)

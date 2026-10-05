@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import routine_store
+from .widgets import place_beside
 
 # Spinbox ranges/steps for the per-waypoint timing fields below.
 DWELL_RANGE_S = (0.0, 30.0)
@@ -161,32 +162,7 @@ class TeachRoutineDialog(QDialog):
         self._update_buttons()
 
     def position_beside(self, widget):
-        """
-        Place this dialog just outside `widget`'s frame - to its right if
-        there's room, else to its left, else pinned against whichever screen
-        edge fits - rather than wherever Qt's default placement happens to
-        land, which was opening it right on top of the Manual Control panel
-        it's meant to be used alongside (forcing a manual drag every time).
-
-        Also matches `widget`'s height by default, so it reads as a panel
-        alongside the main window rather than an oddly small popup next to
-        a much taller one - width is left as whatever __init__ set.
-        """
-        anchor = widget.frameGeometry()
-        # resize() sets content size, not frame size - matching it against
-        # frameGeometry() (which includes the title bar) would overshoot by
-        # that title bar's height. widget.height() is the same content
-        # measurement resize() itself uses, so this compares like with like.
-        self.resize(self.width(), widget.height())
-        x, y = anchor.right() + 12, anchor.top()
-        screen = widget.screen()
-        if screen is not None:
-            available = screen.availableGeometry()
-            if x + self.width() > available.right():
-                x = anchor.left() - self.width() - 12
-            x = max(available.left(), min(x, available.right() - self.width()))
-            y = max(available.top(), min(y, available.bottom() - self.height()))
-        self.move(x, y)
+        place_beside(self, widget)
 
     #-------------------#
     # Waypoint capture  #

@@ -727,7 +727,7 @@ class ManualControlPanel(QGroupBox):
 
 class RobotInfoPanel(QGroupBox):
     """
-    Battery and per-joint telemetry.
+    Battery, Qwiic sensor status, and per-joint telemetry.
 
     Everything here is live: battery percent and raw pack voltage both come
     from one BATTERY_REPLY (and one ADC sample, so they can't disagree), and
@@ -740,6 +740,8 @@ class RobotInfoPanel(QGroupBox):
 
     JOINT_COUNT = 8
     COLUMNS = ("Position", "Current", "Temperature")
+
+    sensors_requested = Signal()   # the Sensors... button
 
     def __init__(self, parent=None):
         super().__init__("Robot Information", parent)
@@ -760,6 +762,15 @@ class RobotInfoPanel(QGroupBox):
         battery_row.addWidget(self.battery_percent)
         battery_row.addWidget(self.battery_voltage)
         battery_row.addStretch()
+
+        # Whether the robot has anything on its Qwiic port, and the way into
+        # the live readings - see MainWindow._poll_sensors().
+        self.sensor_status = QLabel()
+        self.sensor_button = QPushButton("Sensors...")
+        self.sensor_button.clicked.connect(self.sensors_requested)
+        battery_row.addWidget(self.sensor_status)
+        battery_row.addWidget(self.sensor_button)
+        self.set_sensor_status("")
         grid.addLayout(battery_row, 0, 0, 1, len(self.COLUMNS) + 1)
 
         for column, name in enumerate(self.COLUMNS):
@@ -795,6 +806,17 @@ class RobotInfoPanel(QGroupBox):
         # volts stays None against firmware old enough to send only a
         # percentage, so that readout empties rather than showing a stale one.
         self.battery_voltage.setText("" if volts is None else f"{volts:.2f} V")
+
+    def set_sensor_status(self, text, detail="", available=False):
+        """
+        text: what's attached ("" when there's no robot); detail: its
+        tooltip; available: whether there are readings worth opening.
+        """
+        self.sensor_status.setText(text)
+        self.sensor_status.setToolTip(detail)
+        self.sensor_button.setEnabled(available)
+        self.sensor_button.setToolTip(detail if available else
+                                      "No sensor readings from the robot yet.")
 
     def set_telemetry(self, sample):
         """

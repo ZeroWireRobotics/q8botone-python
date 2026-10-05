@@ -459,3 +459,32 @@ class ClickableLabel(QLabel):
         if event.button() == Qt.LeftButton and self.isEnabled() and self.rect().contains(event.position().toPoint()):
             self._on_click()
         super().mouseReleaseEvent(event)
+
+
+def place_beside(window, widget):
+    """
+    Place `window` just outside `widget`'s frame - to its right if
+    there's room, else to its left, else pinned against whichever screen
+    edge fits - rather than wherever Qt's default placement happens to
+    land, which was opening it right on top of the Manual Control panel
+    it's meant to be used alongside (forcing a manual drag every time).
+
+    Also matches `widget`'s height by default, so it reads as a panel
+    alongside the main window rather than an oddly small popup next to
+    a much taller one - width is left as whatever __init__ set.
+    """
+    anchor = widget.frameGeometry()
+    # resize() sets content size, not frame size - matching it against
+    # frameGeometry() (which includes the title bar) would overshoot by
+    # that title bar's height. widget.height() is the same content
+    # measurement resize() itself uses, so this compares like with like.
+    window.resize(window.width(), widget.height())
+    x, y = anchor.right() + 12, anchor.top()
+    screen = widget.screen()
+    if screen is not None:
+        available = screen.availableGeometry()
+        if x + window.width() > available.right():
+            x = anchor.left() - window.width() - 12
+        x = max(available.left(), min(x, available.right() - window.width()))
+        y = max(available.top(), min(y, available.bottom() - window.height()))
+    window.move(x, y)
