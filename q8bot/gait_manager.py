@@ -284,12 +284,20 @@ class GaitManager:
         if not self._tiering_active:
             return
 
-        idx = self.resolve_tier_index(self._tier_chain, self.TIER_BOUNDARIES, self._speed_tier_index, magnitude)
+        self.set_speed_tier(
+            self.resolve_tier_index(self._tier_chain, self.TIER_BOUNDARIES, self._speed_tier_index, magnitude))
 
-        if idx != self._speed_tier_index:
-            self._speed_tier_index = idx
-            self.current_trajectories = {self.current_gait: self._tier_trajectories[idx]}
-            self.phase_index = 0  # accept the small stutter on tier change
+    def set_speed_tier(self, index):
+        """
+        Switch straight to tier `index` of the active gait's chain (0 =
+        slowest) - for callers that choose the tier themselves rather than
+        from a stick magnitude. No-op for gaits without a tier chain.
+        """
+        if not self._tiering_active or index == self._speed_tier_index:
+            return
+        self._speed_tier_index = index
+        self.current_trajectories = {self.current_gait: self._tier_trajectories[index]}
+        self.phase_index = 0  # accept the small stutter on tier change
 
     def resolve_direction(self, requested_direction):
         """

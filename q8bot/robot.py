@@ -2,17 +2,17 @@
 Written by yufeng.wu0902@gmail.com
 
 Q8Bot - one object that owns the link, the gait catalog, and the movement
-state machine, so every front end drives the robot the same way: operate.py's
-pygame app, a desktop GUI, or a plain script.
+state machine, so every front end drives the robot the same way: the desktop
+app or a plain script.
 
-    from robot import Q8Bot
+    from q8bot import Q8Bot
 
     with Q8Bot.connect() as bot:
         bot.set_torque(True)
         bot.stand(1000)
-        bot.move('f')          # keeps trotting - returns immediately
+        bot.move(0.5)          # keeps trotting forward - returns immediately
         time.sleep(3)
-        bot.idle()
+        bot.move(0, 0)         # stop and stand
 
 Movement continues until told otherwise, and it does so identically in both
 execution modes. A background thread ticks at TICK_HZ: in local mode the
@@ -85,6 +85,46 @@ NATIVE_GAIT_RESEND_INTERVAL = 0.25  # seconds
 # radio would otherwise leave the robot walking. The robot ignores repeats.
 CLOSE_REPEATS = 3
 CLOSE_REPEAT_GAP = 0.03  # seconds
+
+
+# move(forward, turn): which of the robot's fixed motions a command means.
+# Each curve table shortens the inner legs' stride (gait_generator: in
+# 'fl_0.75' the left legs step at 75%). Treated as a two-wheeled cart, a curve
+# with inner stride k turns (1 - k) / (1 + k) as much as it walks forward, and
+# a command takes the motion whose turn-to-forward ratio is nearest - the
+# cut-offs sit halfway between neighbours, by angle. These follow from how
+# the tables are built, not from measurement: tune them once the real curves
+# have been filmed.
+def _curve_ratio(inner_stride):
+    return (1 - inner_stride) / (1 + inner_stride)
+
+
+VECTOR_MOTIONS = (                   # (turn/forward ratio, direction suffix)
+    (0.0, ''),                       # straight
+    (_curve_ratio(0.75), '_0.75'),   # gentle curve
+    (_curve_ratio(0.5), '_0.5'),     # tight curve
+    (math.inf, None),                # spin on the spot
+)
+VECTOR_CUTOFFS = tuple(
+    math.tan((math.atan(a) + math.atan(b)) / 2)
+    for (a, _), (b, _) in zip(VECTOR_MOTIONS, VECTOR_MOTIONS[1:])
+)
+
+
+def _tier_speeds(chain, gaits):
+    """
+    Each tier's nominal speed as a share of the chain's fastest: stride
+    length over cycle time, from the gait's own parameters
+    ([stacktype, x0, y0, xrange, yrange, yrange2, s1_count, s2_count]).
+    """
+    paces = [gaits[name][3] / (gaits[name][6] + gaits[name][7]) for name in chain]
+    return [pace / paces[-1] for pace in paces]
+
+
+def _nearest_tier(chain, gaits, speed):
+    """Index of the tier whose nominal speed is nearest `speed` (0-1)."""
+    speeds = _tier_speeds(chain, gaits)
+    return sum(speed >= (a + b) / 2 for a, b in zip(speeds, speeds[1:]))
 
 # Driven by trot_in_place(), never part of the switch-gait rotation.
 INPLACE_GAIT = 'TROT_INPLACE'
@@ -234,6 +274,7 @@ class Q8Bot:
         self._battery_pct = None
         self._battery_volts = None
         self._battery_fresh = False
+        self._battery_replies = 0     # counts every reply, for ping()
         self._telemetry = None
         self._telemetry_hz = DEFAULT_TELEMETRY_HZ
         self._telemetry_last_request = 0.0
@@ -276,7 +317,14 @@ class Q8Bot:
         charging or flashing is never mistaken for the controller.
 
         Moves nothing and leaves torque alone - call set_torque()/stand()
-        when you actually want the robot to do something.
+        when you actually want the robot to do something. It does ping() the
+        robot, and logs one line saying whether it answered:
+
+            INFO: Connected to the controller on COM10 - the robot is answering (battery 87%)
+
+        A robot that doesn't answer (switched off, not paired) is only a
+        warning: the link to the controller is up, and the robot may still
+        join - check bot.ping() before relying on it.
 
         Raises:
             RuntimeError, saying what's plugged in where, if there's no
@@ -284,7 +332,14 @@ class Q8Bot:
         """
         if port is None:
             port = XiaoPortFinder.find_controller()
-        return cls(q8_espnow(port), **kwargs)
+        bot = cls(q8_espnow(port), **kwargs)
+        if bot.ping():
+            Q8Logger.info(f"Connected to the controller on {port} - the robot is answering "
+                          f"(battery {bot.battery_percent}%)")
+        else:
+            Q8Logger.warning(f"Connected to the controller on {port}, but the robot isn't "
+                             f"answering - is it switched on and paired?")
+        return bot
 
     #-------------------#
     # State             #
@@ -366,27 +421,77 @@ class Q8Bot:
             return JointMode.DAMPING
         return JointMode.ON if self.torque else JointMode.OFF
 
+    def __repr__(self):
+        """What a Python prompt shows for `bot`: the state at a glance."""
+        where = getattr(self.link, 'DEVICENAME', '?')
+        if not self._connected:
+            if self._last_error is not None:
+                return f"<Q8Bot on {where}: link lost - {self._last_error}>"
+            return f"<Q8Bot on {where}: closed>"
+        motors = {JointMode.ON: 'motors on', JointMode.OFF: 'motors off',
+                  JointMode.DAMPING: 'motors soft'}[self.joint_mode]
+        activity = 'idle' if self._mode is Mode.IDLE else 'walking'
+        percent = self.battery_percent
+        battery = 'battery unknown' if percent is None else f'battery {percent}%'
+        return f"<Q8Bot on {where}: connected, {motors}, {activity}, {self.gait}, {battery}>"
+
     #-------------------#
     # Movement          #
     #-------------------#
 
     @_needs_link
-    def move(self, direction, magnitude=1.0):
+    def move(self, forward, turn=None, magnitude=None):
         """
-        Walk in `direction` (see protocol.DIRECTION_ORDER) until told
-        otherwise. Returns immediately; the background thread keeps it going.
+        Walk until told otherwise. Returns immediately; the background thread
+        keeps it going.
 
-        Safe to call every frame with live stick values - re-issuing the same
-        direction is a no-op, and a changed one carries the gait phase over.
+            bot.move(0.5)         # forward, about half speed
+            bot.move(0.8, 0.3)    # forward, curving left
+            bot.move(-0.5, 0.2)   # backing up, nose turning left
+            bot.move(0, -1)       # spin right, fast
+            bot.move(0, 0)        # stop and stand
 
         Args:
-            direction: e.g. 'f', 'b', 'l', 'fl_0.75'
-            magnitude: 0.0-1.0 stick push, picks the speed tier for gaits
-                that have one (see GaitManager.SPEED_TIER_CHAINS)
+            forward: -1 to 1, a share of top speed - positive walks forward.
+            turn: -1 to 1, which way the nose rotates - positive is left
+                (counter-clockwise from above) whichever way the robot
+                walks, as in ROS's cmd_vel.
+
+        Their ratio picks the path - straight, gentle curve, tight curve or
+        spin on the spot (see VECTOR_MOTIONS) - and their size the speed:
+        Trot has three and takes the one nearest the requested share of top
+        speed (`forward`, or `turn` for a spin); other gaits have one.
+        Values outside -1..1 are clamped. Without curves, CRAWL and BOUND
+        walk straight; without spins, they stand still.
+
+        The desktop app's form - a named direction (protocol.DIRECTION_ORDER)
+        and a stick magnitude for the speed tier - works as it always has:
+
+            bot.move('fl_0.75', 0.4)
+
+        Safe to call every frame - repeating a command is a no-op, and a
+        changed one carries the gait phase over.
 
         Returns:
-            bool: False if the current gait has no such direction (e.g.
-                CRAWL has no true 'l'/'r'), leaving the robot as it was.
+            bool: False if the current gait can't do it. For move(forward,
+                turn) the robot then stands still; a named direction leaves
+                it as it was.
+        """
+        if isinstance(forward, str):
+            # Named direction: the second positional argument has always
+            # been the magnitude.
+            if magnitude is None:
+                magnitude = 1.0 if turn is None else turn
+            return self._move_direction(forward, magnitude)
+        if magnitude is not None:
+            raise TypeError("magnitude only goes with a named direction - "
+                            "in move(forward, turn) the numbers set the speed")
+        return self._move_vector(forward, 0.0 if turn is None else turn)
+
+    def _move_direction(self, direction, magnitude):
+        """
+        Walk a named direction. `magnitude` picks the speed tier the way a
+        stick does (with hysteresis); None keeps the current tier.
         """
         with self._lock:
             if self.use_local_gaits:
@@ -396,11 +501,50 @@ class Q8Bot:
                 self._start_native(self._tiered_gait_id(magnitude),
                                    DIRECTION_TO_ID[resolved])
             else:
-                self._gait_manager.update_speed_tier(magnitude)
+                if magnitude is not None:
+                    self._gait_manager.update_speed_tier(magnitude)
                 if not self._gait_manager.start_movement(direction):
                     return False
                 self._start_stream(self._gait_manager)
             return True
+
+    def _move_vector(self, forward, turn):
+        """move(forward, turn): map the command onto a direction and tier."""
+        forward, turn = float(forward), float(turn)
+        if math.isnan(forward) or math.isnan(turn):
+            raise ValueError("move() needs numbers, not NaN")
+        forward = max(-1.0, min(1.0, forward))
+        turn = max(-1.0, min(1.0, turn))
+
+        with self._lock:
+            if forward == 0 and turn == 0:
+                self.idle()
+                return True
+
+            ratio = math.inf if forward == 0 else abs(turn) / abs(forward)
+            suffix = VECTOR_MOTIONS[sum(ratio >= cut for cut in VECTOR_CUTOFFS)][1]
+            if suffix is None:
+                direction = 'l' if turn > 0 else 'r'
+                speed = abs(turn)
+            else:
+                base = 'f' if forward > 0 else 'b'
+                # Nose left means shorter left strides going forward, but
+                # shorter right strides backing up - the tail swings right.
+                nose_left = turn > 0
+                side = 'l' if nose_left == (forward > 0) else 'r'
+                direction = f'{base}{side}{suffix}' if suffix else base
+                speed = abs(forward)
+
+            if self._gait_manager.resolve_direction(direction) is None:
+                self.idle()  # e.g. CRAWL can't spin - stand rather than carry on
+                return False
+
+            chain = GaitManager.SPEED_TIER_CHAINS.get(self._gait_manager.current_gait)
+            if chain:
+                tier = _nearest_tier(chain, self.gaits, speed)
+                self._native_tier_index = tier
+                self._gait_manager.set_speed_tier(tier)
+            return self._move_direction(direction, None)
 
     @_needs_link
     def trot_in_place(self):
@@ -516,8 +660,14 @@ class Q8Bot:
 
     @_needs_link
     def set_gait(self, name):
-        """Load `name` and settle onto its stance. False if it won't build."""
+        """
+        Stop, load `name` and settle onto its stance. False if it won't
+        build - the robot is then standing, still in the old gait.
+        """
         with self._lock:
+            # Stop first: the keep-alive repeats whichever gait was started
+            # last, so a walk would carry on in the old gait.
+            self.idle()
             if not self._load_gait(name):
                 return False
             self.stand(500)
@@ -604,6 +754,32 @@ class Q8Bot:
     def request_battery(self):
         """Ask for a battery reading; collect it with take_battery_reading()."""
         return self._guard(self.link.check_battery)
+
+    @_needs_link
+    def ping(self, timeout=1.5):
+        """
+        Whether the robot is answering: asks for a battery reading and waits
+        up to `timeout` seconds for one, asking again halfway in case the
+        first was lost on the radio. Updates battery_percent/battery_volts,
+        but leaves take_battery_reading() alone for whoever polls it.
+
+        Returns:
+            bool: True as soon as a reply arrives.
+        """
+        with self._reply_lock:
+            replies = self._battery_replies
+        start = time.monotonic()
+        asked_again = False
+        self.request_battery()
+        while time.monotonic() - start < timeout:
+            with self._reply_lock:
+                if self._battery_replies != replies:
+                    return True
+            if not asked_again and time.monotonic() - start >= timeout / 2:
+                self.request_battery()
+                asked_again = True
+            time.sleep(0.02)
+        return False
 
     def take_battery_reading(self):
         """
@@ -945,13 +1121,17 @@ class Q8Bot:
         return True
 
     def _tiered_gait_id(self, magnitude):
-        """Pick the gait_id for the current gait, blending tiers by magnitude."""
+        """
+        Pick the gait_id for the current gait, blending tiers by magnitude -
+        or, with magnitude None, keeping the tier already chosen.
+        """
         chain = GaitManager.SPEED_TIER_CHAINS.get(self._gait_manager.current_gait)
         if not chain:
             return GAIT_NAME_TO_ID[self._gait_manager.current_gait]
-        self._native_tier_index = GaitManager.resolve_tier_index(
-            chain, GaitManager.TIER_BOUNDARIES, self._native_tier_index, magnitude
-        )
+        if magnitude is not None:
+            self._native_tier_index = GaitManager.resolve_tier_index(
+                chain, GaitManager.TIER_BOUNDARIES, self._native_tier_index, magnitude
+            )
         return GAIT_NAME_TO_ID[chain[self._native_tier_index]]
 
     def _start_native(self, gait_id, direction_id):
@@ -1100,6 +1280,7 @@ class Q8Bot:
                     self._battery_pct = percent
                     self._battery_volts = volts
                     self._battery_fresh = True
+                    self._battery_replies += 1
             elif reply_type == ReplyType.TELEMETRY_REPLY:
                 sample = parse_telemetry(payload)
                 if sample is not None:
