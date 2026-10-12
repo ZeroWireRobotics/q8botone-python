@@ -65,7 +65,7 @@ DIRECTION_ORDER = [
 
 # gait_id -> GAITS name, for GAIT_RUN. Slow/med/fast mirror TROT_FAST's own
 # SPEED_TIER_CHAINS ordering, so native execution can blend across the same
-# 3 tiers on-robot (see GaitManager.SPEED_TIER_CHAINS, operate.py).
+# 3 tiers on-robot (see GaitManager.SPEED_TIER_CHAINS).
 GAIT_IDS = {
     0: 'TROT_SLOW',
     1: 'TROT_MED',

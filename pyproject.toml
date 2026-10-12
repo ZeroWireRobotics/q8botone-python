@@ -10,11 +10,10 @@ name = "q8bot"
 # Written once, as q8bot.__version__ (see [tool.setuptools.dynamic]); tag each
 # release vX.Y.Z to match. The firmware has its own version line.
 dynamic = ["version"]
-description = "Python control library and app for the Q8bot quadruped robot"
+description = "Python library and desktop app for the Q8botOne quadruped robot"
 readme = "README.md"
 requires-python = ">=3.9"
-# The LICENSE file lives at the repo root, outside this project dir, so name
-# the license rather than pointing at a path a build can't package.
+# MIT - see LICENSE at the top of the repository.
 license = { text = "MIT" }
 authors = [{ name = "Yufeng (Eric) Wu", email = "yufeng.wu0902@gmail.com" }]
 
@@ -26,9 +25,15 @@ dependencies = ["pyserial>=3.5"]
 # enumeration reuses control_config.py's per-controller mappings.
 gui = ["PySide6>=6.6", "pygame>=2.5.2", "pyqtgraph>=0.13", "PyOpenGL>=3.1", "numpy>=1.26",
        # The in-app firmware flasher (q8bot.firmware_flasher).
-       "esptool>=4.7"]
+       # esptool 5 (Python 3.10+): the flasher uses its write-flash spelling.
+       "esptool>=5"]
 # Only k_solver.fk_solve() needs this, and it imports it on demand.
 fk = ["scipy>=1.11.4"]
+
+[project.urls]
+Homepage = "https://zerowirerobotics.com"
+Source = "https://github.com/ZeroWireRobotics/q8botone-python"
+Issues = "https://github.com/ZeroWireRobotics/q8botone-python/issues"
 
 [project.scripts]
 q8bot-gui = "q8bot.ui:main"

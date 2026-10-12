@@ -84,7 +84,7 @@ JOYSTICK_CONFIG = {
                 "vertical": 1,
                 "deadzone": 0.1,
                 # Right stick, for static stance trim (see InputHandler.
-                # get_stance_offset() / operate.py). Verified live on
+                # get_stance_offset()). Verified live on
                 # hardware (axis_probe.py): this controller's axis order is
                 # 0=LX, 1=LY, 2=RX, 3=RY, 4=LT, 5=RT - note RX/RY come
                 # before the triggers, unlike some other SDL2 mappings.
@@ -97,7 +97,7 @@ JOYSTICK_CONFIG = {
                 # pressed), verified live (rt_probe.py). Used via
                 # InputHandler.is_trigger_pressed(), not is_action_pressed()
                 # (which only handles discrete buttons). RT drives 'shoot';
-                # LT drives trot-in-place (see operate.py).
+                # LT drives trot-in-place (see ui/main_window.py).
                 "trigger_right": 5,
                 "trigger_left": 4
             },

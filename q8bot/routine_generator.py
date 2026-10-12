@@ -63,7 +63,7 @@ def greet(q8):
 def shoot(q8, on_kick=None):
     """
     on_kick: optional callable fired the instant the kick starts, for a front
-    end that wants to sync something to it (operate.py buzzes the gamepad).
+    end that wants to sync something to it (the desktop app buzzes the gamepad).
     Takes a callback rather than a joystick so this module stays input-
     agnostic - the buzz has to be timed to the kick, not the trigger press,
     which is why the hook is here instead of at the call site.

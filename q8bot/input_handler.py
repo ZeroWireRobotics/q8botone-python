@@ -101,7 +101,7 @@ class InputHandler:
     def get_stance_offset(self, max_dx=15.0, max_dy=15.0):
         """
         Read the right stick's horizontal/vertical axes for static stance
-        trimming (see operate.py): left/right shifts the whole stance
+        trimming: left/right shifts the whole stance
         front/back, up/down shifts stance height. Not every controller maps
         these axes (see control_config.py's "stance_horizontal"/
         "stance_vertical") - returns (0.0, 0.0) if unsupported, in keyboard
@@ -227,8 +227,8 @@ def init_selected_joystick(index):
     Initialize the joystick chosen by the user and build its control mapping.
 
     Args:
-        index: int or None, joystick index from one of startup_dialogs.py's
-            prompts, or None to use keyboard control.
+        index: int or None, the joystick picked in the app's gamepad
+            list, or None to use keyboard control.
 
     Returns:
         tuple: (use_joystick, joystick, joystick_mapping)

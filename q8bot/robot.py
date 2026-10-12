@@ -67,8 +67,8 @@ WHEELBASE_MM = 78.0  # front-to-back, the axis pitch tilts about
 # append_pos_list(): front-left, front-right, back-left, back-right.
 LEG_ORDER = ('FL', 'FR', 'BL', 'BR')
 
-# How often the background thread runs. Matches operate.py's original loop
-# rate, which is what the streamed trajectories were tuned against.
+# How often the background thread runs. Matches the original pygame app's
+# loop rate, which is what the streamed trajectories were tuned against.
 TICK_HZ = 200
 
 # Local-mode keep-alive: bounds how long a single dropped GAIT_RUN frame can

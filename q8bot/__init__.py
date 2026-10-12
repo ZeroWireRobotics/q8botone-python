@@ -1,23 +1,24 @@
 '''
-Q8bot - Python control library for the Q8bot quadruped.
+Q8bot - Python control library for the Q8botOne quadruped.
 
+    import time
     from q8bot import Q8Bot
 
     with Q8Bot.connect() as bot:
-        bot.set_torque(True)
-        bot.stand(1000)
-        bot.move('f')
+        bot.set_torque(True)       # motors on - the robot stands up
+        bot.move(0.5)              # walk forward; returns immediately
         time.sleep(3)
-        bot.idle()
+        bot.move(0, 0)             # stop and stand
 
-Q8Bot is the whole API for driving a robot; see robot.py for what it owns and
-q8bot.operate for the pygame app built on it.
+Q8Bot is the whole API for driving a robot; see robot.py for what it owns,
+example.py (at the top of the repository) for a guided tour, and q8bot.ui
+for the desktop app built on it.
 
-Importing this package needs only pyserial. The input and UI modules
-(control_config, input_handler, log_overlay, startup_dialogs, operate) need
-pygame and sometimes tkinter, so they are deliberately NOT imported here -
-import them directly if you want them. Likewise kinematics_solver.fk_solve()
-is the one thing that needs scipy, and imports it on demand.
+Importing this package needs only pyserial. The gamepad and UI modules
+(control_config, input_handler, q8bot.ui) need pygame and PySide6 - the
+'gui' extra - so they are deliberately NOT imported here; import them
+directly if you want them. Likewise kinematics_solver.fk_solve() is the one
+thing that needs scipy, and imports it on demand.
 '''
 
 __version__ = '0.1.0'

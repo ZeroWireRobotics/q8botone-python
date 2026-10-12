@@ -20,7 +20,7 @@ class Q8Logger:
 
     Plain `logging` only - it draws nothing itself. A front end that wants to
     display messages attaches its own logging.Handler via add_handler(); see
-    log_overlay.PygameLogOverlay for the one operate.py's window uses.
+    ui/log_bridge.py's QueuedLogHandler for the one the desktop app uses.
     """
 
     _logger = None
@@ -58,7 +58,7 @@ class Q8Logger:
     def add_handler(handler):
         """
         Attach an extra logging.Handler - e.g. a UI overlay that displays
-        messages on screen (see log_overlay.PygameLogOverlay). Keeps the
+        messages on screen (see ui/log_bridge.py). Keeps the
         logger name in one place so front ends don't hardcode it.
         """
         Q8Logger.get_logger().addHandler(handler)

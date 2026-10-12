@@ -13,8 +13,8 @@ as the host-streamed path, so behavior matches exactly either way.
 Re-run this whenever the exported gait's parameters in gait_manager.py's
 GAITS dict change, then rebuild/reflash the robot firmware (q8botone-firmware/robot).
 
-Usage:
-    python export_gait_tables.py
+Usage (from the top of the repository):
+    python -m q8bot.export_gait_tables
 '''
 
 import os
@@ -23,7 +23,7 @@ from .kinematics_solver import k_solver
 from .gait_manager import GaitManager, GAITS
 from .protocol import DIRECTION_ORDER, GAIT_IDS
 
-# Q8bot leg configuration (must match operate.py)
+# Q8bot leg configuration (must match robot.py)
 CENTER_DIST = 19.5
 L1 = 25
 L2 = 40
@@ -71,7 +71,7 @@ def export_gait(gait_id, gait_name):
         frame_arrays.append(format_frame_array(array_name, frames))
 
     # Build the 12-slot direction table using the exact same resolution
-    # (exact match, else FALLBACK_MAP chain) that operate.py's streaming
+    # (exact match, else FALLBACK_MAP chain) that Q8Bot's streaming
     # and native paths use via GaitManager.resolve_direction(), so Local
     # and Remote modes behave identically for every gait. A direction that
     # resolves to nothing (e.g. CRAWL/BOUND's 'l'/'r') gets an explicit

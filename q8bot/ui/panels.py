@@ -324,7 +324,7 @@ class ConnectionPanel(QGroupBox):
 
 
 class DebugConsole(QGroupBox):
-    """Mirrors Q8Logger output, the way operate.py's pygame overlay does."""
+    """Mirrors Q8Logger output."""
 
     def __init__(self, parent=None):
         super().__init__("Debug Console", parent)
@@ -371,7 +371,7 @@ class ManualControlPanel(QGroupBox):
     routine_delete_requested = Signal(object)  # path
 
     # Full deflection, in the units each pad commands.
-    STANCE_MAX_X = 25.0   # mm, matching operate.py's right-stick trim limits
+    STANCE_MAX_X = 25.0   # mm, matching the gamepad's right-stick trim limits
     STANCE_MAX_Y = 15.0   # mm
     TILT_MAX = 20.0       # degrees of roll/pitch
 

@@ -33,7 +33,7 @@ GAITS = {
     # Trot in place: same stacktype as the other trots but xrange=0, so legs
     # lift/lower with no horizontal stride at all - direction is irrelevant
     # (f/b/l/r all collapse to the same motion). Not in the normal
-    # switch_gait rotation (see operate.py's _internal_only_gaits) - driven
+    # switch_gait rotation (see robot.py's INTERNAL_ONLY_GAITS) - driven
     # directly by the LT trigger via its own dedicated GaitManager instance.
     # yrange/s1/s2 match TROT_MED's "moderate" feel as a starting point.
     'TROT_INPLACE': ['trot', 9.75, 43.36, 0, 30, 0, 15, 30],
@@ -246,7 +246,7 @@ class GaitManager:
         Climb/drop through an ordered tier chain based on magnitude, with
         per-boundary hysteresis to avoid flicker near a threshold. Shared
         logic: used internally by update_speed_tier() for gaits that stream
-        (e.g. TROT_FAST), and reusable externally (e.g. operate.py's native
+        (e.g. TROT_FAST), and reusable externally (e.g. Q8Bot's native
         gait tier selection) for identical thresholds/feel.
 
         Args:
@@ -304,7 +304,7 @@ class GaitManager:
         Resolve which direction key the currently loaded gait actually has
         trajectory data for - exact match, else FALLBACK_MAP chain, else
         unsupported. Read-only (does not touch movement state); shared by
-        start_movement() below, operate.py's native gait execution path, and
+        start_movement() below, Q8Bot's native gait execution path, and
         export_gait_tables.py, so all three agree on exactly the same
         directions for a given gait.
 

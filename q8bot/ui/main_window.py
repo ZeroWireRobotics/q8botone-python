@@ -3,18 +3,16 @@ Written by yufeng.wu0902@gmail.com
 
 The Q8bot desktop control window.
 
-Connection, the Debug Console, gamepad control and the Robot Information
-readouts are live; it owns a Q8Bot the same way operate.py does and drives it
-from the same InputHandler. The Manual Control sliders are still placeholders
-(see panels.py).
+It owns a Q8Bot (see robot.py) and drives it from the Manual Control pads or
+a gamepad (InputHandler); the panels themselves are in panels.py.
 
 One QTimer does everything: drains the log queue, polls bot.connected and
 the battery, and reads the pad. Nothing calls back from Q8Bot's tick thread,
 which is why Q8Bot exposes state as properties rather than signals.
 
-Unlike operate.py's loop, nothing here may block: buttons fire on the press
-edge rather than being debounced with time.sleep(), and the scripted
-routines run on a worker so the window keeps painting.
+Nothing here may block: buttons fire on the press edge rather than being
+debounced with time.sleep(), and the scripted routines run on a worker so
+the window keeps painting.
 '''
 
 import logging
@@ -60,8 +58,8 @@ POLL_INTERVAL_MS = 20
 # The ZeroWire Robotics mark, for every window's title bar and the taskbar.
 APP_ICON = Path(__file__).resolve().parent.parent / 'assets' / 'zwr-icon.png'
 
-# Right-stick stance trim while idle, in mm at full deflection. Same values
-# operate.py settled on by hand on hardware.
+# Right-stick stance trim while idle, in mm at full deflection. Values
+# settled on by hand on hardware.
 STANCE_TRIM_MAX_DX = 25.0
 STANCE_TRIM_MAX_DY = 15.0
 
@@ -192,7 +190,7 @@ class MainWindow(QMainWindow):
         self._set_status(f"{port} open - waiting for the robot")
         Q8Logger.info(f"{port} open. Gaits: {', '.join(self.bot.selectable)}")
 
-        # Torque on and into the stance, as operate.py does on startup - the
+        # Torque on and into the stance as soon as we connect - the
         # robot has to be holding itself up before any of this can drive it.
         self.bot.set_joint_mode(JointMode.ON)
         self.bot.stand(1000)
@@ -408,7 +406,7 @@ class MainWindow(QMainWindow):
             self.manual.show_gait(self._shown_gait)
             self.manual.set_can_turn(self.bot.can_turn)
 
-        # Walking wins over posing, the same order operate.py uses: a stance
+        # Walking wins over posing: a stance
         # offset is meaningless once a gait owns the leg positions.
         mx, my = self.manual.move_pad.value()
         if math.hypot(mx, my) >= MOVE_PAD_DEADZONE:
@@ -634,8 +632,8 @@ class MainWindow(QMainWindow):
 
     def _poll_gamepad(self):
         """
-        Turn gamepad state into Q8Bot commands - the same mapping operate.py
-        uses, minus its time.sleep() debounces, which would freeze the window.
+        Turn gamepad state into Q8Bot commands. Buttons act on the press edge
+        instead of time.sleep() debounces, which would freeze the window.
         Buttons fire on the press edge instead.
         """
         if self.input is None or self.connection.pc_mode:
