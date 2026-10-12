@@ -21,8 +21,10 @@ import logging
 import math
 import threading
 import time
+from pathlib import Path
 
 from PySide6.QtCore import QTimer
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QGridLayout,
@@ -54,6 +56,9 @@ from .widgets import StatusDot
 # Fast enough that a stick flick reaches the robot promptly. The gait itself
 # is timed by Q8Bot's own thread, so this only has to carry changes.
 POLL_INTERVAL_MS = 20
+
+# The ZeroWire Robotics mark, for every window's title bar and the taskbar.
+APP_ICON = Path(__file__).resolve().parent.parent / 'assets' / 'zwr-icon.png'
 
 # Right-stick stance trim while idle, in mm at full deflection. Same values
 # operate.py settled on by hand on hardware.
@@ -828,7 +833,14 @@ def main(argv=None):
     handler = QueuedLogHandler(level=logging.DEBUG if args.debug else logging.INFO)
     Q8Logger.add_handler(handler)
 
+    if sys.platform == 'win32':
+        # A taskbar identity of its own, so Windows shows the app's icon
+        # there rather than python.exe's when it's run from Python.
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('ZeroWireRobotics.Q8botOne')
+
     app = QApplication(sys.argv[:1])
+    app.setWindowIcon(QIcon(str(APP_ICON)))
     window = MainWindow(handler)
     window.show()
     return app.exec()

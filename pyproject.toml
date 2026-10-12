@@ -43,7 +43,7 @@ packages = ["q8bot", "q8bot.ui", "q8bot.assets", "q8bot.firmware"]
 version = { attr = "q8bot.__version__" }
 
 [tool.setuptools.package-data]
-# The 3D viewer's mesh, and the firmware the Flash Firmware window writes,
-# so both survive a (non-editable) pip install.
-"q8bot.assets" = ["*.stl"]
+# The 3D viewer's mesh, the app icon, and the firmware the Flash Firmware
+# window writes, so all three survive a (non-editable) pip install.
+"q8bot.assets" = ["*.stl", "*.png"]
 "q8bot.firmware" = ["*.bin"]
