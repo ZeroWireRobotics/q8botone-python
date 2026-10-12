@@ -245,6 +245,7 @@ class MainWindow(QMainWindow):
         busy_port = self._port if self.bot is not None else None
         FirmwareDialog(busy_port=busy_port, release_port=self._disconnect_robot,
                        parent=self).exec()
+        self.connection.forget_port_identities()  # a reflashed board may be a different one now
         self.connection.port_combo.repopulate()   # a reflashed board re-enumerates
 
     #-------------------#

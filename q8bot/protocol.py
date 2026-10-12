@@ -19,7 +19,7 @@ from enum import IntEnum
 # any change the other side has to know about: a new or changed command or
 # reply, a payload layout, gait/direction IDs. Must equal protocol.h's
 # PROTOCOL_VERSION. Not yet exchanged or checked on connect.
-PROTOCOL_VERSION = 2  # 2: SENSOR_REQUEST / SENSOR_REPLY
+PROTOCOL_VERSION = 3  # 2: SENSOR_REQUEST / SENSOR_REPLY; 3: GAIT_RUN must be repeated
 
 START_BYTE = 0xAA
 _HEADER_LEN = 2       # msg_type, length
@@ -33,7 +33,9 @@ class CmdType(IntEnum):
     BATTERY_REQUEST = 0x03
     RECORD_SEND = 0x04     # retired - recording removed; do not reuse this id
     JUMP = 0x05
-    GAIT_RUN = 0x06   # {gait_id: uint8, direction_id: uint8} - run a local gait/direction autonomously
+    GAIT_RUN = 0x06   # {gait_id: uint8, direction_id: uint8} - run a local gait/direction autonomously;
+                      # repeat it while walking (NATIVE_GAIT_RESEND_INTERVAL) - the robot stops
+                      # after 1s without one
     GAIT_STOP = 0x07  # no payload - stop autonomous gait, hand control back to raw MOVE
     GREET = 0x08      # no payload - scripted greeting sequence, runs entirely on the robot
     HOST_CONNECTED = 0x09  # no payload - controller-local only, never forwarded to the robot;

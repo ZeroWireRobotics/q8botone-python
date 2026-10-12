@@ -10,6 +10,8 @@ lives in viewer.py.
 '''
 
 import html
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
@@ -55,7 +57,13 @@ LEVEL_COLORS = {
 
 
 class RefreshingCombo(QComboBox):
-    """A combo box that re-runs its source the moment it's opened."""
+    """
+    A combo box that re-runs its source the moment it's opened. The source
+    returns (label, value) pairs, or (label, value, key) where `key` names the
+    entry so update_entry() can relabel it in place later.
+    """
+
+    KEY_ROLE = Qt.UserRole + 1
 
     def __init__(self, source, parent=None):
         super().__init__(parent)
@@ -68,12 +76,21 @@ class RefreshingCombo(QComboBox):
     def repopulate(self):
         previous = self.currentData()
         self.clear()
-        for label, value in self._source():
-            self.addItem(label, value)
+        for entry in self._source():
+            self.addItem(entry[0], entry[1])
+            if len(entry) > 2:
+                self.setItemData(self.count() - 1, entry[2], self.KEY_ROLE)
         if previous is not None:
             index = self.findData(previous)
             if index >= 0:
                 self.setCurrentIndex(index)
+
+    def update_entry(self, key, label, value):
+        """Relabel the entry named `key` without rebuilding the list - safe while it's open."""
+        index = self.findData(key, self.KEY_ROLE)
+        if index >= 0:
+            self.setItemText(index, label)
+            self.setItemData(index, value)
 
 
 class ConnectionPanel(QGroupBox):
@@ -84,6 +101,7 @@ class ConnectionPanel(QGroupBox):
     """
 
     robot_connect_requested = Signal(str)   # port
+    _port_identified = Signal(str, object)  # port, (kind, version) - from a worker thread
     robot_disconnect_requested = Signal()
     gamepad_connect_requested = Signal(object)  # joystick index
     gamepad_disconnect_requested = Signal()
@@ -95,6 +113,13 @@ class ConnectionPanel(QGroupBox):
         self._list_gamepads = list_gamepads
         self._robot_connected = False
         self._gamepad_connected = False
+        # What each board on USB said it is (XiaoPortFinder.identify). The
+        # robot and the controller share one USB ID, so the list asks each
+        # board in the background and only offers controllers - or a board
+        # too old to answer - for Connect.
+        self._port_identity = {}
+        self._identifying = set()
+        self._port_identified.connect(self._on_port_identified)
 
         self.port_combo = RefreshingCombo(self._robot_ports)
         self.port_combo.setMinimumWidth(200)
@@ -163,9 +188,54 @@ class ConnectionPanel(QGroupBox):
 
     def _robot_ports(self):
         ports = XiaoPortFinder.list_all()
+        # A board back on the same port after being unplugged may be a
+        # different one - ask again.
+        for gone in set(self._port_identity) - set(ports):
+            del self._port_identity[gone]
         if not ports:
             return [("No controller found", None)]
-        return [(p, p) for p in ports]
+        if not self._robot_connected:
+            self._identify([p for p in ports if p not in self._identifying and
+                            self._port_identity.get(p, ('',))[0] not in ('controller', 'robot', 'other')])
+        return [self._port_entry(p) for p in ports]
+
+    def _port_entry(self, port):
+        """(label, value, key): only a controller, or a board that didn't answer, can be connected."""
+        if port in self._identifying:
+            return f"{port} - checking...", None, port
+        if port not in self._port_identity:
+            return port, port, port   # not asked yet (it's only asked while disconnected)
+        kind, version = self._port_identity[port]
+        label = f"{port} - {XiaoPortFinder.describe(kind, version)}"
+        return label, (port if kind in ('controller', 'silent', 'busy') else None), port
+
+    def _identify(self, ports):
+        if not ports:
+            return
+        self._identifying.update(ports)
+
+        def work():
+            with ThreadPoolExecutor(len(ports)) as pool:
+                for port, found in zip(ports, pool.map(XiaoPortFinder.identify, ports)):
+                    try:
+                        self._port_identified.emit(port, found)
+                    except RuntimeError:
+                        return   # the window closed while a board was being asked
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_port_identified(self, port, found):
+        self._identifying.discard(port)
+        self._port_identity[port] = found
+        label, value, _ = self._port_entry(port)
+        self.port_combo.update_entry(port, label, value)
+        if found[0] == 'controller' and self.port_combo.currentData() is None:
+            self.port_combo.setCurrentIndex(self.port_combo.findData(port))
+        self._update_buttons()
+
+    def forget_port_identities(self):
+        """After a firmware update a board may have become something else - ask again."""
+        self._port_identity.clear()
 
     def _gamepads(self):
         # Compatible devices only. SDL happily reports Bluetooth mice and

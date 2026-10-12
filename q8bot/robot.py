@@ -25,10 +25,12 @@ Commands are safe to call from any thread. The scripted routines (jump,
 greet, show_range, shoot) block for as long as the routine takes.
 '''
 
+import atexit
 import functools
 import math
 import threading
 import time
+import weakref
 from collections import deque
 from enum import Enum
 
@@ -74,6 +76,15 @@ TICK_HZ = 200
 # needs nothing - GaitRunner keeps playing until GAIT_STOP - so this is
 # purely insurance, and cheap compared to falling back to streaming.
 NATIVE_GAIT_RESEND_INTERVAL = 0.25  # seconds
+# The robot also counts on it: since protocol 3 it stops a gait that hasn't
+# been repeated for a second, so a host that vanishes mid-walk (script
+# crashed, USB pulled) can't leave it walking.
+
+# close() sends its parting commands (gait stop, motors off) this many times,
+# a little apart: nothing acknowledges them, and a single frame lost on the
+# radio would otherwise leave the robot walking. The robot ignores repeats.
+CLOSE_REPEATS = 3
+CLOSE_REPEAT_GAP = 0.03  # seconds
 
 # Driven by trot_in_place(), never part of the switch-gait rotation.
 INPLACE_GAIT = 'TROT_INPLACE'
@@ -170,6 +181,22 @@ def _needs_link(method):
     return wrapper
 
 
+# Every Q8Bot not yet closed. Each is closed at interpreter exit, so a script
+# that ends - or a Python prompt left without close() - stops the robot and
+# turns its motors off instead of leaving it walking. Weak references, so this
+# never keeps a bot alive.
+_open_bots = weakref.WeakSet()
+
+
+@atexit.register
+def _close_open_bots():
+    for bot in list(_open_bots):
+        try:
+            bot.close()
+        except Exception:
+            pass
+
+
 class Q8Bot:
     def __init__(self, link, use_local_gaits=True, gaits=GAITS, leg=None,
                  tick_hz=TICK_HZ):
@@ -238,19 +265,25 @@ class Q8Bot:
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run, name='q8bot-tick', daemon=True)
         self._thread.start()
+        _open_bots.add(self)
 
     @classmethod
     def connect(cls, port=None, **kwargs):
         """
-        Open a link to the first (or given) ESP32C3 controller and wrap it.
+        Open a link to the controller and wrap it. Without a port, each
+        XIAO ESP32-C3 on USB is asked what it is (see
+        XiaoPortFinder.find_controller()), so a robot plugged in for
+        charging or flashing is never mistaken for the controller.
 
         Moves nothing and leaves torque alone - call set_torque()/stand()
         when you actually want the robot to do something.
+
+        Raises:
+            RuntimeError, saying what's plugged in where, if there's no
+            controller or more than one.
         """
         if port is None:
-            port = XiaoPortFinder.find()
-            if port is None:
-                raise RuntimeError("No ESP32C3 controller found - is it plugged in?")
+            port = XiaoPortFinder.find_controller()
         return cls(q8_espnow(port), **kwargs)
 
     #-------------------#
@@ -825,18 +858,33 @@ class Q8Bot:
     #-------------------#
 
     def close(self, disable_torque=True):
-        """Stop the tick thread, park the robot, and close the link."""
+        """
+        Stop the tick thread, park the robot, and close the link: any gait
+        stops and, unless disable_torque=False, the motors turn off. Those
+        parting commands go out CLOSE_REPEATS times and are flushed before
+        the port closes, so one lost frame can't leave the robot walking.
+
+        Runs by itself at interpreter exit for any bot still open. Safe to
+        call more than once.
+        """
+        _open_bots.discard(self)
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
             self._thread = None
 
         with self._lock:
-            if self._mode is Mode.NATIVE:
+            for attempt in range(CLOSE_REPEATS):
+                if attempt:
+                    time.sleep(CLOSE_REPEAT_GAP)
+                # Always, not only in NATIVE mode: harmless when standing,
+                # and the robot may be walking on a command this object
+                # didn't send.
                 self._guard(self.link.stop_gait)
+                if disable_torque:
+                    self._guard(self.link.disable_torque)
+            self._guard(self.link.flush)
             self._mode = Mode.IDLE
-            if disable_torque:
-                self._guard(self.link.disable_torque)
             # Deliberately after the parting commands, so they still go out,
             # and before link.close() so nothing races in behind them.
             self._connected = False

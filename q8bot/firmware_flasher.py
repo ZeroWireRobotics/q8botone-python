@@ -45,6 +45,8 @@ from pathlib import Path
 
 import serial
 
+from .helpers import open_serial
+
 # Where the app looks for firmware - refreshed from the PlatformIO build
 # output by update_firmware_bins.py.
 FIRMWARE_DIR = Path(__file__).resolve().parent / 'firmware'
@@ -123,7 +125,8 @@ def identify_device(port, timeout=2.0):
     last_error = None
     while time.monotonic() < deadline:
         try:
-            with serial.Serial(port, 115200, timeout=0.05) as link:
+            # Without touching the reset line: asking must not reboot the board.
+            with open_serial(port, 115200, 0.05) as link:
                 link.reset_input_buffer()
                 received = b''
                 next_probe = 0.0

@@ -18,6 +18,7 @@ import threading
 
 import serial
 
+from .helpers import open_serial
 from .protocol import CmdType, ReplyType, build_frame, read_frame
 
 DEFAULT_JOINTLIST = [i + 11 for i in range(8)]
@@ -41,9 +42,9 @@ class q8_espnow:
         # public methods (e.g. move_mirror -> move_all) doesn't deadlock.
         self._lock = threading.RLock()
 
-        # Initialize serial communication with ESP32-C3
-        self.serialHandler = serial.Serial(self.DEVICENAME, self.BAUDRATE,
-                                           timeout=read_timeout)
+        # Initialize serial communication with ESP32-C3 - with the reset line
+        # left alone, so closing the port doesn't reboot the controller.
+        self.serialHandler = open_serial(self.DEVICENAME, self.BAUDRATE, read_timeout)
 
         # Tell the controller a host is now driving it, so it switches out
         # of independent (gamepad) mode into relay mode - controller-local,
@@ -57,6 +58,14 @@ class q8_espnow:
     @property
     def is_open(self):
         return self.serialHandler.is_open
+
+    def flush(self):
+        """Wait until everything written has left the computer. False if the port is closed."""
+        with self._lock:
+            if not self.serialHandler.is_open:
+                return False
+            self.serialHandler.flush()
+        return True
 
     def close(self):
         """
