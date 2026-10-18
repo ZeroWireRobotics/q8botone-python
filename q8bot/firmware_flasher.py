@@ -31,9 +31,17 @@ filtered list, and esptool's --chip check enforces it again at flash time):
   flashing goes through the ESP32-C3's ROM bootloader and so works whatever
   the current firmware is doing.
 
-A wrong-device flash is recoverable, not a brick - only the application
-image at APP_OFFSET is ever written, never the bootloader, so the board can
+A wrong-device flash is recoverable, not a brick: the chip's own ROM
+bootloader (its USB download mode) can't be overwritten, so the board can
 always be flashed again with the right file.
+
+A board that has never been flashed - or was erased - needs more than the
+application: the second-stage bootloader, the partition table and
+boot_app0 (which application slot to start). They're the same for robot and
+controller, and flash() writes them too whenever they're in FIRMWARE_DIR
+(see SUPPORT_IMAGES), exactly as PlatformIO's upload does - so a blank board
+and an update both work. Without them only the application is written,
+which is enough for an update but leaves a blank board unable to start.
 '''
 
 import re
@@ -68,8 +76,19 @@ _IDENTIFY_COMMAND = b'i'
 FirmwareIdentity = namedtuple('FirmwareIdentity', 'target version')
 
 CHIP = 'esp32c3'
-APP_OFFSET = '0x10000'   # application image only - bootloader and partition table never change between builds
+APP_OFFSET = '0x10000'   # the application (robot.bin / controller.bin)
 FLASH_BAUD = 921600      # ignored by the C3's native USB, but esptool wants one
+
+# The rest of a complete flash, written with the application when all three
+# are in FIRMWARE_DIR (see the module docstring). Offsets as PlatformIO's.
+SUPPORT_IMAGES = (
+    ('0x0', 'bootloader.bin'),
+    ('0x8000', 'partitions.bin'),
+    ('0xe000', 'boot_app0.bin'),
+)
+# As PlatformIO's upload for this board: its QIO flash driven in DIO, at
+# 80 MHz. esptool applies these to the bootloader's header only.
+FLASH_ARGS = ('--flash-mode', 'dio', '--flash-freq', '80m', '--flash-size', 'detect')
 
 _PERCENT = re.compile(r'(\d+(?:\.\d+)?)\s*%')
 _ANSI = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
@@ -77,6 +96,15 @@ _ANSI = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
 
 def bin_path(target):
     return FIRMWARE_DIR / f'{target}.bin'
+
+
+def support_images():
+    """
+    [(offset, path), ...] for SUPPORT_IMAGES in FIRMWARE_DIR - all three, or
+    [] if any is missing (then only the application gets written).
+    """
+    images = [(offset, FIRMWARE_DIR / name) for offset, name in SUPPORT_IMAGES]
+    return images if all(path.exists() for _, path in images) else []
 
 
 def _identity(match):
@@ -150,8 +178,9 @@ def identify_device(port, timeout=2.0):
 def flash(port, path, on_line=None, on_progress=None):
     """
     Write a firmware image to the application partition of the board on
-    `port`, then reset it so the new firmware runs. Blocks until done -
-    run it off the UI thread.
+    `port` - along with the bootloader, partition table and boot_app0 when
+    they're in FIRMWARE_DIR, so a blank board starts too - then reset it so
+    the new firmware runs. Blocks until done - run it off the UI thread.
 
     Runs esptool as a subprocess rather than calling it in-process: it
     parses its own argv, keeps module-level state, and can sys.exit() on
@@ -163,8 +192,10 @@ def flash(port, path, on_line=None, on_progress=None):
     Returns:
         bool: True if esptool reported success.
     """
+    images = [arg for offset, image in support_images() for arg in (offset, str(image))]
     cmd = [sys.executable, '-m', 'esptool', '--chip', CHIP, '--port', port,
-           '--baud', str(FLASH_BAUD), 'write-flash', APP_OFFSET, str(path)]
+           '--baud', str(FLASH_BAUD), 'write-flash', *FLASH_ARGS,
+           *images, APP_OFFSET, str(path)]
     creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             creationflags=creationflags)

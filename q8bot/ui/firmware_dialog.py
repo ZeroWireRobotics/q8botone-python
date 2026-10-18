@@ -159,9 +159,13 @@ class FirmwareDialog(QDialog):
             if found == target:
                 self._file_ok = True
                 self._file_version = identity.version
+                # Without the bootloader files only the program is written:
+                # fine for an update, not enough for a blank board.
+                extra = "" if flasher.support_images() else \
+                    " - no bootloader files, so only for updating a board that already runs firmware"
                 self._set_label(self.file_label,
                                 f"{path.name} - {_version_text(identity.version)}, "
-                                f"{path.stat().st_size // 1024} KB, built {built}", None)
+                                f"{path.stat().st_size // 1024} KB, built {built}{extra}", None)
             elif found is None:
                 self._set_label(self.file_label,
                                 f"{path.name} has no device marker - rebuild it from current firmware",
@@ -260,21 +264,21 @@ class FirmwareDialog(QDialog):
             return
 
         else:
-            # Legacy firmware from before the identify command (or firmware
-            # that isn't running) - the board can still be flashed, the user
-            # just has to vouch for which one it is.
+            # A blank board, firmware from before the identify command, or
+            # firmware that isn't running - the board can still be flashed,
+            # the user just has to vouch for which one it is.
             if QMessageBox.warning(
-                    self, "Legacy Firmware",
-                    f"The device on {self._port} is the right kind of board, but its "
-                    f"firmware can't report whether it's the robot or the controller - "
-                    f"expected for firmware from before this check existed.\n\n"
+                    self, "Board Didn't Answer",
+                    f"The device on {self._port} is the right kind of board, but it "
+                    f"didn't say whether it's the robot or the controller - expected for "
+                    f"a blank board, or firmware from before this check existed.\n\n"
                     f"Only continue if you're sure it's the {name}. After this update "
                     f"it'll be identified automatically.",
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 self._set_busy(False)
                 self._status("Cancelled - nothing was flashed.")
                 return
-            self._status(f"Flashing {name} firmware over legacy firmware (unconfirmed)...")
+            self._status(f"Flashing {name} firmware (board unconfirmed)...")
 
         threading.Thread(target=self._flash_worker, name='q8bot-fw-flash',
                          daemon=True).start()

@@ -31,6 +31,15 @@ BUILDS = {
     'robot': FIRMWARE_REPO / 'robot' / '.pio' / 'build' / 'robot_permanent' / 'firmware.bin',
     'controller': FIRMWARE_REPO / 'controller' / '.pio' / 'build' / 'controller_permanent' / 'firmware.bin',
 }
+# The rest of a complete flash, for a blank board (see firmware_flasher's
+# SUPPORT_IMAGES): bootloader and partition table from the builds - the same
+# for both boards, which is checked - and boot_app0 from the Arduino core.
+SUPPORT_SOURCES = {
+    'bootloader.bin': [BUILDS[t].with_name('bootloader.bin') for t in BUILDS],
+    'partitions.bin': [BUILDS[t].with_name('partitions.bin') for t in BUILDS],
+    'boot_app0.bin': [Path.home() / '.platformio' / 'packages' / 'framework-arduinoespressif32'
+                      / 'tools' / 'partitions' / 'boot_app0.bin'],
+}
 # What a build of exactly a vX.Y.Z tag with no local changes reports.
 RELEASE_VERSION = re.compile(r'^\d+\.\d+\.\d+$')
 
@@ -55,6 +64,18 @@ def main():
         print(f"{target:<10} copied {version} ({source.stat().st_size:,} bytes, built {built})")
         if not RELEASE_VERSION.match(version):
             print(f"{'':<10} WARNING: not a tagged release build - tag and rebuild before shipping")
+    for name, sources in SUPPORT_SOURCES.items():
+        missing = [s for s in sources if not s.exists()]
+        if missing:
+            print(f"{name:<15} not found at {missing[0]}")
+            failed = True
+            continue
+        if len({s.read_bytes() for s in sources}) > 1:
+            print(f"{name:<15} REFUSED: robot's and controller's differ - one flash set can't serve both")
+            failed = True
+            continue
+        shutil.copy2(sources[0], FIRMWARE_DIR / name)
+        print(f"{name:<15} copied ({sources[0].stat().st_size:,} bytes)")
     # The same check every package build runs - better to hear it now.
     print()
     print('\n'.join(check_firmware_bins.check()[1]))
