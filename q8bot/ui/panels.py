@@ -106,7 +106,6 @@ class ConnectionPanel(QGroupBox):
     gamepad_connect_requested = Signal(object)  # joystick index
     gamepad_disconnect_requested = Signal()
     mode_changed = Signal(bool)             # True = PC mode
-    flash_firmware_requested = Signal()
 
     def __init__(self, list_gamepads, parent=None):
         super().__init__("Connection", parent)
@@ -125,12 +124,6 @@ class ConnectionPanel(QGroupBox):
         self.port_combo.setMinimumWidth(200)
         self.robot_button = QPushButton("Connect")
         self.robot_button.clicked.connect(self._toggle_robot)
-
-        # Always enabled - flashing works with or without a robot connected,
-        # and is how a device on broken firmware gets fixed.
-        self.flash_button = QPushButton("Flash Firmware...")
-        self.flash_button.setToolTip("Update the robot or controller firmware over USB.")
-        self.flash_button.clicked.connect(self.flash_firmware_requested.emit)
 
         self.gamepad_combo = RefreshingCombo(self._gamepads)
         self.gamepad_combo.setMinimumWidth(200)
@@ -158,7 +151,6 @@ class ConnectionPanel(QGroupBox):
         grid.addWidget(self.port_combo, 0, 2)
         grid.addWidget(self.robot_button, 0, 3)
         grid.addWidget(self.robot_state, 0, 4)
-        grid.addWidget(self.flash_button, 0, 5)
         grid.addWidget(self.gamepad_dot, 1, 0)
         grid.addWidget(QLabel("Xbox Controller"), 1, 1)
         grid.addWidget(self.gamepad_combo, 1, 2)
@@ -172,7 +164,7 @@ class ConnectionPanel(QGroupBox):
         mode_row.addWidget(self.mode_toggle)
         mode_row.addWidget(self.pc_label)
         mode_row.addStretch()
-        grid.addLayout(mode_row, 2, 0, 1, 6)
+        grid.addLayout(mode_row, 2, 0, 1, 5)
 
         self.set_robot_status(StatusDot.OFF, "Not connected")
         self.set_gamepad_status(StatusDot.OFF, "Not connected")
@@ -232,10 +224,6 @@ class ConnectionPanel(QGroupBox):
         if found[0] == 'controller' and self.port_combo.currentData() is None:
             self.port_combo.setCurrentIndex(self.port_combo.findData(port))
         self._update_buttons()
-
-    def forget_port_identities(self):
-        """After a firmware update a board may have become something else - ask again."""
-        self._port_identity.clear()
 
     def _gamepads(self):
         # Compatible devices only. SDL happily reports Bluetooth mice and

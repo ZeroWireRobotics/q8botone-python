@@ -90,7 +90,7 @@ just that, and works with any Python from 3.9.
 While the app is connected, the controller only relays the app's commands -
 turn it off and on to use its own buttons and joystick again. You can also
 drive from the app with an Xbox controller (**Xbox Controller**, then
-**Connect**), and **Flash Firmware...** updates the robot and controller.
+**Connect**).
 
 ## Python API
 
