@@ -24,9 +24,7 @@ desktop app asks a robot - the joint angles (telemetry), a battery reading so
 the app sees it's there, and its Qwiic sensors (none, or an MPU6050 given as
 `imu`, see imu.SimMPU6050) - with only what the model has: servo current,
 temperature and supply voltage aren't modelled, nor is the battery, which
-reads full. MirrorLink is the real link with a
-SimLink beside it: the robot gets every command as usual, and the sim gets
-a copy.
+reads full.
 '''
 
 import collections
@@ -454,28 +452,3 @@ class SimLink:
         self.robot.inbox.append(command)
         return True
 
-
-class MirrorLink:
-    '''A real link (q8_espnow) that also sends every command to a SimLink, so
-    the sim does what the robot is told. Everything else - replies, the port,
-    torque_on - is the real link's, and a command that fails on the robot
-    isn't copied.'''
-
-    MIRRORED = ('enable_torque', 'disable_torque', 'set_damping', 'send_jump', 'send_greet',
-                'run_gait', 'stop_gait', 'move_all', 'move_mirror')
-
-    def __init__(self, link, sim_link):
-        self.link, self.sim_link = link, sim_link
-
-    def __getattr__(self, name):
-        real = getattr(self.link, name)
-        if name not in self.MIRRORED:
-            return real
-        copy = getattr(self.sim_link, name)
-
-        def both(*args, **kwargs):
-            result = real(*args, **kwargs)
-            if result:
-                copy(*args, **kwargs)
-            return result
-        return both

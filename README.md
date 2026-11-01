@@ -92,16 +92,14 @@ Install the sim into the desktop app's environment, from q8botone-python:
 venv\Scripts\pip install -e ..\q8botone-sim
 ```
 
-The app's 3D view then shows this model, live, and **Model follows** picks
-what moves it:
+The app's 3D view then shows this model, live. What moves it depends on
+what's connected:
 
-- **Controls** - what the app sends the robot: every command is copied to
-  the simulated robot, which plays it the way the firmware does
-- **Robot** - what the robot measures: its eight joint angles from telemetry
-  (asked for 50 times a second meanwhile), each leg's loop closed, on a test
-  stand - joint angles alone don't say how the robot is tilted
-  - with an **MPU6050** on the robot's Qwiic port, **Calibrate IMU** (beside
-    the switch) finds which way it's mounted: the robot eases its body into
+- **a robot** - what the robot measures: its eight joint angles from
+  telemetry (asked for 50 times a second meanwhile), each leg's loop closed,
+  on a test stand - joint angles alone don't say how the robot is tilted
+  - with an **MPU6050** on the robot's Qwiic port, **Calibrate IMU** (above
+    the model) finds which way it's mounted: the robot eases its body into
     four tilts on its own feet and holds each still, about 15 s. The joint
     angles say which way up the chassis is in each, the accelerometer which
     way up the chip is, and the turn between them is the mounting - any
@@ -112,13 +110,14 @@ what moves it:
     on top with its axes as calibrated (X red, Y green, Z blue; where on the
     robot it sits isn't known). The gyro's offset is measured during
     calibration and kept up to date whenever the robot stands still.
+- **the simulated robot** - with no robot, connect **Simulated robot** (the
+  last entry in the app's Connection list) instead: the model is then the
+  robot, playing what the app sends it the way the firmware does.
 
 **Reset** puts the model back in the middle of the floor, facing forward,
 upright - its legs as they are.
 
-With no robot, connect **Simulated robot** (the last entry in the app's
-Connection list) instead: the model is then the robot. The app drives it
-as it would the real one, and it answers as the robot does - its joint
+The simulated robot answers the app as the robot does - its joint
 angles, a battery that reads full, no Qwiic sensors. Servo current and
 temperature aren't modelled, so they read n/a.
 
