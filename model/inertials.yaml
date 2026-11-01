@@ -1,0 +1,56 @@
+# Mass properties of each rigid part, from the simplified sim CAD in Onshape
+# (q8botone-hardware/cad/sim), Mass and section properties panel, 2026-10-31.
+#
+# Frame: the Onshape assembly's - X forward (+X is the front), Y across
+# (+Y the robot's left), Z up - in mm. Inertia is about the part's centre of
+# mass, axes parallel to the frame's, in g mm^2; xy/xz/yz are the tensor's
+# off-diagonal entries as Onshape shows them (checked against the meshes:
+# same sign convention).
+#
+# The whole robot weighs about 250 g; these add up to 246.8 g.
+
+units: {length: mm, mass: g, inertia: g mm^2}
+
+parts:
+  chassis:
+    stl: Simplified-Chassis.stl
+    mass: 222
+    com: [-1.676, 0.007, 7.454]
+    inertia: {xx: 63464, yy: 301694, zz: 318402, xy: -50, xz: 3825, yz: 9}
+    # Everything that doesn't move - servos, PCB, battery, plastic frame - as
+    # one part. Mass measured; centre of mass and inertia from the full
+    # mechanical assembly in Onshape (accurate individual components), applied
+    # here as overrides. Not from this mesh: as one uniform material it would
+    # put the centre of mass 1.4 mm away and the inertia 3-7% higher.
+
+  # The links are single-material printed parts, so their centre of mass and
+  # inertia follow from the mesh and the mass alone; the model computes them
+  # that way, in each link's own frame. The values below are Onshape's for one
+  # instance in the assembled pose - kept to check the model's placement
+  # against: the principal moments already match the meshes' within 0.02%.
+  # The same three link parts make all four legs; the right side's are
+  # flipped over.
+  upper_link:            # E - two per leg, one on each servo
+    stl: Upper-Linkage-E-1.stl          # E-2 is the same file
+    mass: 1.7
+    check:
+      - instance: Upper-Linkage <1>
+        com: [-55.977, -29.991, -4.786]
+        inertia: {xx: 77.843, yy: 177.801, zz: 104.146, xy: -0.458, xz: -58.732, yz: -0.366}
+      - instance: Upper-Linkage <2>
+        com: [-22.434, -29.991, -1.179]
+        inertia: {xx: 33.664, yy: 177.801, zz: 148.325, xy: 0.579, xz: 18.321, yz: -0.09}
+  lower_outer_link:      # C
+    stl: Lower-Outer-Linkage-C.stl
+    mass: 1.2
+    check:
+      - instance: Lower-Outer-Linkage <1>
+        com: [-55.461, -37.366, -21.272]
+        inertia: {xx: 56.061, yy: 261.839, zz: 214.05, xy: 14.385, xz: 96.089, yz: -6.795}
+  lower_inner_link:      # D
+    stl: Lower-Inner-Linkage-D.stl
+    mass: 1.6
+    check:
+      - instance: Lower-Inner-Linkage <1>
+        com: [-20.249, -34.318, -18.06]
+        inertia: {xx: 189.921, yy: 366.211, zz: 180.265, xy: 0.269, xz: -170.625, yz: 0.277}
