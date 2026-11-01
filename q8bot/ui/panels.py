@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 
 from ..helpers import XiaoPortFinder
 from ..protocol import ticks_to_degrees
+from .viewer import SIMULATED_ROBOT
 from .widgets import (
     BatteryGauge,
     ClickableLabel,
@@ -98,6 +99,9 @@ class ConnectionPanel(QGroupBox):
     Robot and gamepad selection. Emits requests rather than owning the
     connection itself - MainWindow holds the Q8Bot and calls back in with
     set_robot_connected() / set_gamepad_connected().
+
+    With offer_simulated, the robot list ends with SIMULATED_ROBOT, the 3D
+    view's simulated robot, to connect with no hardware at all.
     """
 
     robot_connect_requested = Signal(str)   # port
@@ -107,9 +111,10 @@ class ConnectionPanel(QGroupBox):
     gamepad_disconnect_requested = Signal()
     mode_changed = Signal(bool)             # True = PC mode
 
-    def __init__(self, list_gamepads, parent=None):
+    def __init__(self, list_gamepads, offer_simulated=False, parent=None):
         super().__init__("Connection", parent)
         self._list_gamepads = list_gamepads
+        self._offer_simulated = offer_simulated
         self._robot_connected = False
         self._gamepad_connected = False
         # What each board on USB said it is (XiaoPortFinder.identify). The
@@ -184,12 +189,13 @@ class ConnectionPanel(QGroupBox):
         # different one - ask again.
         for gone in set(self._port_identity) - set(ports):
             del self._port_identity[gone]
-        if not ports:
-            return [("No controller found", None)]
         if not self._robot_connected:
             self._identify([p for p in ports if p not in self._identifying and
                             self._port_identity.get(p, ('',))[0] not in ('controller', 'robot', 'other')])
-        return [self._port_entry(p) for p in ports]
+        entries = [self._port_entry(p) for p in ports]
+        if self._offer_simulated:
+            entries.append((SIMULATED_ROBOT, SIMULATED_ROBOT))
+        return entries or [("No controller found", None)]
 
     def _port_entry(self, port):
         """(label, value, key): only a controller, or a board that didn't answer, can be connected."""
@@ -221,7 +227,8 @@ class ConnectionPanel(QGroupBox):
         self._port_identity[port] = found
         label, value, _ = self._port_entry(port)
         self.port_combo.update_entry(port, label, value)
-        if found[0] == 'controller' and self.port_combo.currentData() is None:
+        # A controller found is picked for Connect, over the simulated robot too
+        if found[0] == 'controller' and self.port_combo.currentData() in (None, SIMULATED_ROBOT):
             self.port_combo.setCurrentIndex(self.port_combo.findData(port))
         self._update_buttons()
 
@@ -876,10 +883,11 @@ class RobotInfoPanel(QGroupBox):
         self.sensor_button.setToolTip(detail if available else
                                       "No sensor readings from the robot yet.")
 
-    def set_telemetry(self, sample):
+    def set_telemetry(self, sample, simulated=False):
         """
         Fill the joint grid from one snapshot (see protocol.parse_telemetry),
-        or clear it when passed None.
+        or clear it when passed None. A simulated robot's has positions only:
+        the simulation doesn't model servo current or temperature.
         """
         if sample is None:
             for field in self.joint_fields.values():
@@ -889,5 +897,5 @@ class RobotInfoPanel(QGroupBox):
         for i in range(self.JOINT_COUNT):
             degrees = ticks_to_degrees(sample['position'][i])
             self.joint_fields[("Position", i)].setText(f"{degrees:.1f}°")
-            self.joint_fields[("Current", i)].setText(f"{sample['current'][i]} mA")
-            self.joint_fields[("Temperature", i)].setText(f"{sample['temperature'][i]}°C")
+            self.joint_fields[("Current", i)].setText("n/a" if simulated else f"{sample['current'][i]} mA")
+            self.joint_fields[("Temperature", i)].setText("n/a" if simulated else f"{sample['temperature'][i]}°C")

@@ -47,7 +47,7 @@ from .panels import (
 )
 from .sensor_window import SensorWindow
 from .teach_dialog import TeachRoutineDialog
-from .viewer import ViewerPanel
+from .viewer import FOLLOW_IMU_HZ, FOLLOW_TELEMETRY_HZ, SIMULATED_ROBOT, ViewerPanel
 from .widgets import StatusDot
 
 # Fast enough that a stick flick reaches the robot promptly. The gait itself
@@ -72,12 +72,14 @@ ROBOT_SILENT_SECONDS = 8.0   # ~2 missed replies before we stop claiming it's th
 
 # Joint telemetry, on for as long as the window has a robot. Costs the servo
 # bus about one percent (the read lands on 1 tick in 20, after the gait write,
-# so it only uses slack) and ESP-NOW about 2 KB/s.
+# so it only uses slack) and ESP-NOW about 2 KB/s. Raised to the viewer's
+# FOLLOW_TELEMETRY_HZ while its model follows the robot.
 TELEMETRY_HZ = 10
 
 # Qwiic sensors: a slow request whenever a robot is connected keeps the
 # Robot Information status ("No sensor connected" / which sensor) current;
-# the Sensors window raises it while open. A robot whose firmware predates
+# the Sensors window raises it while open, and the 3D view's model further
+# (FOLLOW_IMU_HZ) while it follows the robot. A robot whose firmware predates
 # sensor support (protocol < 2) ignores the request, so silence past
 # SENSOR_SILENT_SECONDS is reported rather than waited on forever.
 SENSOR_PRESENCE_HZ = 1
@@ -102,6 +104,7 @@ class MainWindow(QMainWindow):
         self._buttons = {}         # last-seen state, for press-edge detection
         self._routine = None       # worker running a blocking routine
         self._port = None
+        self._simulated = False    # connected to the 3D view's simulated robot, not a real one
         self._connected_at = 0.0
         self._last_request_at = 0.0
         self._last_reply_at = None   # None until the robot has ever answered
@@ -112,10 +115,10 @@ class MainWindow(QMainWindow):
         self._sensor_window = None   # the open SensorWindow, or None
         self._plotted_snapshot = None  # the newest reading its plot has drawn
 
-        self.connection = ConnectionPanel(self._list_gamepads)
+        self.viewer = ViewerPanel()
+        self.connection = ConnectionPanel(self._list_gamepads, offer_simulated=self.viewer.can_simulate)
         self.console = DebugConsole()
         self.manual = ManualControlPanel()
-        self.viewer = ViewerPanel()
         self.info = RobotInfoPanel()
 
         # One grid rather than two independent columns: Manual Control and
@@ -143,6 +146,8 @@ class MainWindow(QMainWindow):
         self.connection.gamepad_disconnect_requested.connect(self._disconnect_gamepad)
         self.connection.mode_changed.connect(self._on_mode_changed)
         self.info.sensors_requested.connect(self._open_sensor_window)
+        self.viewer.follow_robot_changed.connect(self._follow_robot_changed)
+        self.viewer.calibrate_requested.connect(self._calibrate_imu)
         self.manual.gait_selected.connect(self._select_gait)
         self.manual.joint_mode_requested.connect(self._joint_mode_requested)
         self.manual.jump_requested.connect(self._manual_jump)
@@ -169,15 +174,21 @@ class MainWindow(QMainWindow):
     #-------------------#
 
     def _connect_robot(self, port):
+        simulated = port == SIMULATED_ROBOT
         try:
-            self.bot = Q8Bot(q8_espnow(port))
+            # The simulated robot is the 3D view's model; a real robot's
+            # commands are copied to that model too
+            link = self.viewer.simulated_link() if simulated else self.viewer.mirror(q8_espnow(port))
+            self.bot = Q8Bot(link)
         except Exception as exc:
             Q8Logger.error(f"Could not connect on {port}: {exc}")
             self.connection.set_robot_status(
                 StatusDot.ERROR, "Port failed", f"Could not open {port}: {exc}")
             return
+        self.viewer.set_robot(self.bot)
 
         self._port = port
+        self._simulated = simulated
         self._last_reply_at = None
         self._connected_at = time.monotonic()
         self._last_request_at = 0.0  # so the first request goes out immediately
@@ -199,8 +210,8 @@ class MainWindow(QMainWindow):
         # Telemetry runs whenever this window holds a robot. It's
         # request/response, so closing the window simply stops asking - there
         # is no streaming state left running on the robot.
-        self.bot.telemetry_hz = TELEMETRY_HZ
-        self.bot.sensor_hz = SENSOR_PRESENCE_HZ
+        self.bot.telemetry_hz = self._telemetry_hz()
+        self.bot.sensor_hz = self._sensor_hz()
         self.info.set_sensor_status("Sensors: checking...")
 
         self._shown_gait = self.bot.gait
@@ -209,11 +220,30 @@ class MainWindow(QMainWindow):
         self.manual.set_scripted_routines_enabled(True)
         self.manual.set_saved_routines_enabled(True)
 
+    def _telemetry_hz(self):
+        """Faster while the 3D view follows the robot's pose, so it moves smoothly there."""
+        return FOLLOW_TELEMETRY_HZ if self.viewer.follows_robot else TELEMETRY_HZ
+
+    def _follow_robot_changed(self, _following):
+        if self.bot is not None:
+            self.bot.telemetry_hz = self._telemetry_hz()
+            self.bot.sensor_hz = self._sensor_hz()
+
+    def _calibrate_imu(self):
+        """The 3D view's Calibrate IMU: the robot tilts itself a few ways while
+        its IMU is read - seconds, on the routine worker like a jump."""
+        if self.bot is None or not self.bot.connected or self._routine_running():
+            return
+        bot = self.bot
+        self._run_routine("IMU calibration", lambda: self.viewer.calibrate_imu(bot))
+
     def _disconnect_robot(self):
         self._close_teach_dialog()   # teaching needs a live robot
         if self.bot is not None:
             self.bot.close()
             self.bot = None
+        self.viewer.set_robot(None)
+        self._simulated = False
         self._last_reply_at = None
         self.connection.set_robot_connected(False)
         self.connection.set_robot_status(StatusDot.OFF, "Not connected")
@@ -320,6 +350,8 @@ class MainWindow(QMainWindow):
         if not self.bot.connected:
             Q8Logger.error("Robot connection lost.")
             self.bot = None
+            self.viewer.set_robot(None)
+            self._simulated = False
             self._last_reply_at = None
             self.connection.set_robot_connected(False)
             self.connection.set_robot_status(
@@ -340,7 +372,7 @@ class MainWindow(QMainWindow):
             return
 
         self._poll_robot_liveness()
-        self.info.set_telemetry(self.bot.telemetry)
+        self.info.set_telemetry(self.bot.telemetry, simulated=self._simulated)
         self._poll_sensors()
         self._poll_joint_mode()
         # Telemetry itself stalls during a routine anyway - Q8Bot's tick
@@ -778,12 +810,19 @@ class MainWindow(QMainWindow):
         self._sensor_window.position_beside(self)
         self._sensor_window.show()
         if self.bot is not None:
-            self.bot.sensor_hz = SENSOR_LIVE_HZ
+            self.bot.sensor_hz = self._sensor_hz()
 
     def _on_sensor_window_closed(self):
         self._sensor_window = None
         if self.bot is not None:
-            self.bot.sensor_hz = SENSOR_PRESENCE_HZ
+            self.bot.sensor_hz = self._sensor_hz()
+
+    def _sensor_hz(self):
+        """Fastest while the 3D view follows the robot (for its IMU), then while
+        the Sensors window is open; otherwise just enough to see what's attached."""
+        if self.viewer.follows_robot:
+            return FOLLOW_IMU_HZ
+        return SENSOR_LIVE_HZ if self._sensor_window is not None else SENSOR_PRESENCE_HZ
 
     def _close_sensor_window(self):
         if self._sensor_window is not None:

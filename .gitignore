@@ -2,6 +2,9 @@
 # User-taught routines (see routine_store.py) - these are per-robot data the
 # user builds through the GUI, not code, so they don't belong in commits.
 q8bot/routines/
+# The 3D view's calibration of the robot's IMU mounting (see ui/viewer.py) -
+# per robot, like the routines
+q8bot/imu_mount.json
 /DynamixelSDK/
 docs/*.SLDPRT
 docs/*.SLDASM
