@@ -195,6 +195,8 @@ class Attitude:
         w = R_cs @ (gyro - self.bias)
         g = np.linalg.norm(a)
         seen = a / g if g > 1e-6 else None
+        if self._t is not None and t == self._t:
+            return                          # sampled the same millisecond as the last: nothing new
         if self._q is None or self._t is None or not 0 < t - self._t <= self.MAX_GAP:
             if abs(g / self.mount.gravity - 1) > 0.05:
                 return                      # mid-jolt: start from a reading that's gravity alone
