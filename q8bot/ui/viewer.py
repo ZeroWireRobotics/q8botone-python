@@ -2,21 +2,20 @@
 Written by yufeng.wu0902@gmail.com
 
 The 3D viewer panel. With the simulator installed (q8botone-sim, which
-brings MuJoCo) it shows the robot's simulated model, live, and a switch picks
-what the model follows:
+brings MuJoCo) it shows the robot's simulated model, live. What moves it
+depends on what's connected:
 
-  Controls  what the controls send the robot: every command also goes to the
-            simulated robot, which plays it the way the robot's firmware does
-  Robot     what the robot measures: its eight joint angles from telemetry,
-            shown on a test stand - the joints alone don't say how the robot
-            is tilted. With an MPU6050 on the robot's Qwiic port, once it's
-            calibrated (Calibrate IMU: the robot tilts itself a few ways), the
-            model comes off the stand: the IMU tilts and turns it, its lowest
-            point rests on the floor, and its feet on the floor walk it along.
-
-The simulated robot can also be connected in place of a real one
-(SIMULATED_ROBOT in the Connection panel's list), to drive the app with no
-hardware at all: the model is then the robot, following the controls.
+  a robot          what the robot measures: its eight joint angles from
+                   telemetry, shown on a test stand - the joints alone don't
+                   say how the robot is tilted. With an MPU6050 on the
+                   robot's Qwiic port, once it's calibrated (Calibrate IMU:
+                   the robot tilts itself a few ways), the model comes off
+                   the stand: the IMU tilts and turns it, its lowest point
+                   rests on the floor, and its feet on the floor walk it along.
+  the simulated    the model is the robot (SIMULATED_ROBOT in the Connection
+  robot            panel's list): the controls drive it, played the way the
+                   robot's firmware does - the app with no hardware at all.
+  nothing          the model stands where it was left.
 
 Without the simulator it shows the robot as a single STL you can orbit.
 
@@ -40,12 +39,10 @@ from types import SimpleNamespace
 
 import numpy as np
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QGroupBox, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from ..helpers import Q8Logger
 from ..protocol import ticks_to_degrees
-from .widgets import ClickableLabel, ToggleSwitch
 
 
 def _shaded_from_above():
@@ -132,19 +129,18 @@ SIMULATED_ROBOT = "Simulated robot"
 
 def _simulator():
     """
-    The simulator's pieces - Q8Sim, Firmware, SimLink, MirrorLink, ModelView
-    and the imu module, by name - or None if q8botone-sim isn't installed.
-    It's optional: a separate repository, and MuJoCo is a large download.
+    The simulator's pieces - Q8Sim, Firmware, SimLink, ModelView and the imu
+    module, by name - or None if q8botone-sim isn't installed. It's
+    optional: a separate repository, and MuJoCo is a large download.
     """
     try:
         from q8botone_sim import imu
-        from q8botone_sim.firmware import Firmware, MirrorLink, SimLink
+        from q8botone_sim.firmware import Firmware, SimLink
         from q8botone_sim.qtview import ModelView
         from q8botone_sim.sim import Q8Sim
     except ImportError:
         return None
-    return SimpleNamespace(Q8Sim=Q8Sim, Firmware=Firmware, SimLink=SimLink, MirrorLink=MirrorLink,
-                           ModelView=ModelView, imu=imu)
+    return SimpleNamespace(Q8Sim=Q8Sim, Firmware=Firmware, SimLink=SimLink, ModelView=ModelView, imu=imu)
 
 
 def find_model(asset_dir=None):
@@ -202,19 +198,16 @@ def _is_ascii_stl(data):
 
 class LiveModel(QWidget):
     """
-    The simulated robot, following either the controls or the robot (see
-    the module docstring). MainWindow builds its Q8Bot on mirror()'s link,
-    so every command the robot gets reaches the simulation too - or, with
-    no robot, on simulated_link(), the simulation alone - and hands the bot
-    over with set_robot() for its telemetry.
+    The simulated robot, following the robot or the controls (see the module
+    docstring). MainWindow builds its Q8Bot on the robot's own link, or with
+    no robot on simulated_link(), and hands the bot over with set_robot():
+    which one it is decides what the model follows.
     """
 
-    follow_robot_changed = Signal(bool)
     calibrate_requested = Signal()          # Calibrate IMU - MainWindow runs calibrate_imu()
 
     def __init__(self, simulator, parent=None):
         super().__init__(parent)
-        self._mirror_link = simulator.MirrorLink
         self._imu = simulator.imu
         self.sim = simulator.Q8Sim()
         self.firmware = simulator.Firmware(self.sim)    # the robot's firmware, run against the model
@@ -235,17 +228,6 @@ class LiveModel(QWidget):
 
         self.view = simulator.ModelView(self.sim)
         self.view.setToolTip("Drag to turn, scroll to zoom.")
-        self.toggle = ToggleSwitch()
-        self.toggle.toggled.connect(self._follow_changed)
-        self.controls_label = ClickableLabel("Controls", lambda: self.toggle.setChecked(False))
-        self.robot_label = ClickableLabel("Robot", lambda: self.toggle.setChecked(True))
-        self._tips = {
-            self.controls_label: "The model does what the controls send the robot, simulated",
-            self.toggle: "",
-            self.robot_label: "The model takes the robot's measured joint angles",
-        }
-        for widget, tip in self._tips.items():
-            widget.setToolTip(tip)
         self.status = QLabel()
         # Its text changes all the time; a longer line mustn't widen the window
         self.status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
@@ -263,11 +245,6 @@ class LiveModel(QWidget):
 
         row = QHBoxLayout()
         row.setContentsMargins(8, 6, 8, 0)
-        row.addWidget(QLabel("Model follows"))
-        row.addSpacing(6)
-        for widget in (self.controls_label, self.toggle, self.robot_label):
-            row.addWidget(widget)
-        row.addSpacing(12)
         row.addWidget(self.status, 1)
         row.addWidget(self.calibrate_button)
         row.addWidget(self.reset_button)
@@ -275,7 +252,6 @@ class LiveModel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(row)
         layout.addWidget(self.view, 1)
-        self._paint_follow()
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -283,11 +259,8 @@ class LiveModel(QWidget):
 
     @property
     def follows_robot(self):
-        return self.toggle.isChecked()
-
-    def mirror(self, link):
-        """The robot's link, with every command copied to the simulation."""
-        return self._mirror_link(link, self._sim_link)
+        """True while a real robot is connected: the model shows its measured pose."""
+        return self.bot is not None and not self.simulated
 
     def simulated_link(self):
         """A link to the simulation itself, standing in for a robot's."""
@@ -295,20 +268,18 @@ class LiveModel(QWidget):
 
     def set_robot(self, bot):
         """
-        The connected Q8Bot (built on mirror()'s link or simulated_link()),
-        or None. Before the bot sends anything: following the controls again
-        restarts the simulated firmware, dropping what's queued for it.
+        The connected Q8Bot (built on a robot's link or simulated_link()),
+        or None. Before the bot sends anything: from following a robot back
+        to the controls restarts the simulated firmware, dropping what's
+        queued for it.
         """
+        following = self.follows_robot
         self.bot = bot
         self._shown = None
         self._attitude = None
         self.simulated = bot is not None and bot.link is self._sim_link
-        if self.simulated:
-            self.toggle.setChecked(False)       # there's no other robot to follow
-        tip = "Connected to the simulated robot - the model is the robot" if self.simulated else ""
-        for widget in (self.controls_label, self.toggle, self.robot_label):
-            widget.setEnabled(not self.simulated)
-            widget.setToolTip(tip or self._tips[widget])
+        if self.follows_robot != following:
+            self._follow_changed(self.follows_robot)
 
     def reset(self):
         """The model back where it started, in the middle of the floor facing
@@ -338,22 +309,14 @@ class LiveModel(QWidget):
         self.sim.show_imu(None)
         self._attitude = None
         if not robot:
+            self.calibrate_button.hide()
             self._simulate_on()                 # set down on the floor in the robot's last pose
         self._shown = None
-        self._paint_follow()
-        self.follow_robot_changed.emit(robot)
-
-    def _paint_follow(self):
-        active, idle = QFont(), QFont()
-        active.setBold(True)
-        self.robot_label.setFont(active if self.follows_robot else idle)
-        self.controls_label.setFont(idle if self.follows_robot else active)
 
     def _tick(self):
         now = time.perf_counter()
         elapsed, self._wall = min(now - self._wall, 0.05), now     # after a stall, slow down rather than leap
         if self.follows_robot:
-            self.firmware.inbox.clear()         # the robot plays its commands; the model shows the outcome
             text = self._follow_robot()
         else:
             self._owed += elapsed
@@ -380,14 +343,11 @@ class LiveModel(QWidget):
             self.mount, self._new_mount = self._new_mount, None
             self._attitude = None
         bot = self.bot
-        if bot is None:
-            self.calibrate_button.hide()
-            return "Connect a robot to see its pose"
         sample = bot.telemetry
         latest = imu.reading(bot.sensors)
         age = bot.sensor_age
         has_imu = latest is not None and age is not None and age < IMU_STALE_S
-        self.calibrate_button.setVisible(has_imu and not self.simulated)
+        self.calibrate_button.setVisible(has_imu)
         self.calibrate_button.setEnabled(not self.calibrating)
         self.calibrate_button.setText("Recalibrate IMU" if self.mount is not None else "Calibrate IMU")
         use_imu = has_imu and self.mount is not None and imu.reading(bot.sensors, self.mount.address) is not None
@@ -403,14 +363,14 @@ class LiveModel(QWidget):
             ready = self._attitude is not None and self._attitude.ready
             self.sim.show_pose(angles, self._attitude.orientation() if use_imu and ready else None)
         if self.calibrating:
-            return "Calibrating - leave the robot be"
+            return "Robot: calibrating - leave it be"
         if sample is None:
             return "Waiting for the robot..."
         if use_imu:
-            return "Joints + IMU"
+            return "Robot: joints + IMU"
         if has_imu:
-            return "On a stand - calibrate the IMU to see the tilt"
-        return "Joints, on a test stand"
+            return "Robot: on a stand - calibrate the IMU to see the tilt"
+        return "Robot: joints, on a test stand"
 
     def _take_imu(self, bot):
         """The IMU readings that came in since the last frame, into the tracked
@@ -513,7 +473,6 @@ class ViewerPanel(QGroupBox):
     LiveModel), else the STL to orbit. Click-drag to rotate, scroll to zoom.
     """
 
-    follow_robot_changed = Signal(bool)
     calibrate_requested = Signal()
 
     def __init__(self, parent=None):
@@ -530,10 +489,9 @@ class ViewerPanel(QGroupBox):
             except Exception as exc:
                 Q8Logger.error(f"Could not start the simulated model, showing the STL instead: {exc}")
         if self.live is not None:
-            self.live.follow_robot_changed.connect(self.follow_robot_changed)
             self.live.calibrate_requested.connect(self.calibrate_requested)
             layout.addWidget(self.live)
-            Q8Logger.info("3D view: the simulated model, following the controls.")
+            Q8Logger.info("3D view: the simulated model - it follows the robot you connect.")
             return
 
         model_path = find_model()
@@ -563,10 +521,6 @@ class ViewerPanel(QGroupBox):
     def can_simulate(self):
         """The simulated robot is there to connect (simulated_link())."""
         return self.live is not None
-
-    def mirror(self, link):
-        """The link to build the Q8Bot on: copied to the live model, if there is one."""
-        return self.live.mirror(link) if self.live is not None else link
 
     def simulated_link(self):
         """The live model's own link, for a Q8Bot with no robot. Needs can_simulate."""

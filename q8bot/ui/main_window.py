@@ -146,7 +146,6 @@ class MainWindow(QMainWindow):
         self.connection.gamepad_disconnect_requested.connect(self._disconnect_gamepad)
         self.connection.mode_changed.connect(self._on_mode_changed)
         self.info.sensors_requested.connect(self._open_sensor_window)
-        self.viewer.follow_robot_changed.connect(self._follow_robot_changed)
         self.viewer.calibrate_requested.connect(self._calibrate_imu)
         self.manual.gait_selected.connect(self._select_gait)
         self.manual.joint_mode_requested.connect(self._joint_mode_requested)
@@ -176,9 +175,8 @@ class MainWindow(QMainWindow):
     def _connect_robot(self, port):
         simulated = port == SIMULATED_ROBOT
         try:
-            # The simulated robot is the 3D view's model; a real robot's
-            # commands are copied to that model too
-            link = self.viewer.simulated_link() if simulated else self.viewer.mirror(q8_espnow(port))
+            # The simulated robot is the 3D view's model
+            link = self.viewer.simulated_link() if simulated else q8_espnow(port)
             self.bot = Q8Bot(link)
         except Exception as exc:
             Q8Logger.error(f"Could not connect on {port}: {exc}")
@@ -223,11 +221,6 @@ class MainWindow(QMainWindow):
     def _telemetry_hz(self):
         """Faster while the 3D view follows the robot's pose, so it moves smoothly there."""
         return FOLLOW_TELEMETRY_HZ if self.viewer.follows_robot else TELEMETRY_HZ
-
-    def _follow_robot_changed(self, _following):
-        if self.bot is not None:
-            self.bot.telemetry_hz = self._telemetry_hz()
-            self.bot.sensor_hz = self._sensor_hz()
 
     def _calibrate_imu(self):
         """The 3D view's Calibrate IMU: the robot tilts itself a few ways while

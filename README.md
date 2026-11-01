@@ -94,17 +94,16 @@ drive from the app with an Xbox controller (**Xbox Controller**, then
 
 With the simulator (q8botone-sim, checked out beside this repository)
 installed in the same environment - `pip install -e ../q8botone-sim` - the 3D
-view shows the robot's simulated model, live. **Model follows** switches it
-between **Controls**, where the model does what the app sends the robot, and
-**Robot**, where it takes the robot's measured joint angles, on a test stand.
-With an MPU6050 on the robot's Qwiic port, **Calibrate IMU** (the robot tilts
-itself four ways, about 15 s) finds how the sensor is mounted, and the model
-then comes off the stand: tilted, turned and walked along as the robot is.
-**Reset** puts the model back in the middle. No robot to hand? Pick
-**Simulated robot** in the Connection panel's list and click **Connect**: the
-app then drives the model alone, with everything but the servos' current and
-temperature readings. Without the simulator, the view is a model to turn and
-look at.
+view shows the robot's simulated model, live. Connected to a robot, the model
+takes the robot's measured joint angles, on a test stand. With an MPU6050 on
+the robot's Qwiic port, **Calibrate IMU** (the robot tilts itself four ways,
+about 15 s) finds how the sensor is mounted, and the model then comes off the
+stand: tilted, turned and walked along as the robot is. No robot to hand?
+Pick **Simulated robot** in the Connection panel's list and click
+**Connect**: the model is then the robot, and the app drives it as it would
+the real one, with everything but the servos' current and temperature
+readings. **Reset** puts the model back in the middle. Without the
+simulator, the view is a model to turn and look at.
 
 ## Python API
 
