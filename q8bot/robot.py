@@ -38,7 +38,7 @@ from . import routine_generator
 from .espnow import q8_espnow
 from .gait_manager import GAITS, GaitManager, gait_info
 from .helpers import Q8Logger, XiaoPortFinder
-from .kinematics_solver import k_solver
+from .kinematics_solver import CENTER_DIST, L1, L2, TRACK_MM, WHEELBASE_MM, k_solver  # noqa: F401 (also here for importers)
 from .protocol import (
     DIRECTION_ORDER,
     DIRECTION_TO_ID,
@@ -50,18 +50,8 @@ from .protocol import (
     ticks_to_degrees,
 )
 
-# Q8bot leg configuration
-CENTER_DIST = 19.5  # Distance between two actuators
-L1 = 25             # Upper leg length
-L2 = 40             # Lower leg length
-
-# Distance between leg pivots, for body tilt. Measured off the robot's own
-# mesh (q8bot/assets, the two actuator blocks sit at x = -39.2 and +38.7, and
-# the hips span the full 79.6mm width), so treat these as good estimates
-# rather than drawing dimensions - they only scale how many degrees a given
-# tilt is *called*, not whether it works. Correct them from CAD when handy.
-TRACK_MM = 80.0      # left-to-right, the axis roll tilts about
-WHEELBASE_MM = 78.0  # front-to-back, the axis pitch tilts about
+# The legs' geometry - CENTER_DIST, L1, L2, and TRACK_MM / WHEELBASE_MM for
+# body tilt - is kinematics_solver.py's, imported above.
 
 # Order of the 8 joint angles on the wire, matching gait_generator's
 # append_pos_list(): front-left, front-right, back-left, back-right.

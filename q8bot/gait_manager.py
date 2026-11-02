@@ -18,28 +18,31 @@ from .gait_generator import (
 # Gait parameters dictionary
 # Format: 'NAME': [STACKTYPE, x0, y0, xrange, yrange, yrange2, s1_count, s2_count]
 GAITS = {
-    # 'DRIBBLE':      ['trot', 9.75, 35, 30, 15, 0, 15, 30],
-    # 'TROT':      ['trot', 9.75, 43.36, 40, 20, 0, 15, 30],
-    'TROT_FAST': ['trot', 9.75, 43.36, 50, 20, 0, 12, 24],
+    # 'DRIBBLE':      ['trot', 10.0, 35, 30, 15, 0, 15, 30],
+    # 'TROT':      ['trot', 10.0, 43.36, 40, 20, 0, 15, 30],
+    'TROT_FAST': ['trot', 10.0, 43.36, 50, 20, 0, 12, 24],
     # Slower companions to TROT_FAST: progressively smaller stride (less
     # xrange/yrange), finer step resolution (more s1/s2 counts). Not
     # directly selectable via switch_gait - GaitManager blends across these
     # based on joystick magnitude whenever TROT_FAST is active (see
     # SPEED_TIER_CHAINS).
-    'TROT_SLOW': ['trot', 9.75, 43.36, 30, 20, 0, 18, 36],
-    'TROT_MED':  ['trot', 9.75, 43.36, 40, 20, 0, 15, 30],
-    'TROT_HIGH': ['trot', 9.75, 60, 20, 10, 0, 15, 30],
-    'TROT_LOW':  ['trot', 9.75, 25, 20, 10, 0, 15, 30],
+    'TROT_SLOW': ['trot', 10.0, 43.36, 30, 20, 0, 18, 36],
+    'TROT_MED':  ['trot', 10.0, 43.36, 40, 20, 0, 15, 30],
+    # 58, not the 60 it was: with the legs' real lengths (kinematics_solver)
+    # 60 is out of reach at the ends of the stride - and 58 is where the
+    # old, rounder lengths had been standing it all along
+    'TROT_HIGH': ['trot', 10.0, 58, 20, 10, 0, 15, 30],
+    'TROT_LOW':  ['trot', 10.0, 25, 20, 10, 0, 15, 30],
     # Trot in place: same stacktype as the other trots but xrange=0, so legs
     # lift/lower with no horizontal stride at all - direction is irrelevant
     # (f/b/l/r all collapse to the same motion). Not in the normal
     # switch_gait rotation (see robot.py's INTERNAL_ONLY_GAITS) - driven
     # directly by the LT trigger via its own dedicated GaitManager instance.
     # yrange/s1/s2 match TROT_MED's "moderate" feel as a starting point.
-    'TROT_INPLACE': ['trot', 9.75, 43.36, 0, 30, 0, 15, 30],
-    'CRAWL':     ['crawl', 9.75, 40, 10, 20, 0, 50, 25],
-    'BOUND':     ['bound', 9.75, 33.36, 40, 0, 20, 50, 10],
-    # 'PRONK':     ['pronk', 9.75, 33.36, 40, 0, 20, 60, 10],
+    'TROT_INPLACE': ['trot', 10.0, 43.36, 0, 30, 0, 15, 30],
+    'CRAWL':     ['crawl', 10.0, 40, 10, 20, 0, 50, 25],
+    'BOUND':     ['bound', 10.0, 33.36, 40, 0, 20, 50, 10],
+    # 'PRONK':     ['pronk', 10.0, 33.36, 40, 0, 20, 60, 10],
 }
 
 # Human-readable names for anything a user picks between - a GUI dropdown or

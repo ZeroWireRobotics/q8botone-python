@@ -11,7 +11,8 @@ produce 'f'/'b') get the rest filled in via GaitManager.FALLBACK_MAP, same
 as the host-streamed path, so behavior matches exactly either way.
 
 Re-run this whenever the exported gait's parameters in gait_manager.py's
-GAITS dict change, then rebuild/reflash the robot firmware (q8botone-firmware/robot).
+GAITS dict change - or the leg geometry in kinematics_solver.py - then
+rebuild/reflash the robot firmware (q8botone-firmware/robot).
 
 Usage (from the top of the repository):
     python -m q8bot.export_gait_tables
@@ -19,14 +20,9 @@ Usage (from the top of the repository):
 
 import os
 
-from .kinematics_solver import k_solver
+from .kinematics_solver import CENTER_DIST, L1, L2, k_solver
 from .gait_manager import GaitManager, GAITS
 from .protocol import DIRECTION_ORDER, GAIT_IDS
-
-# Q8bot leg configuration (must match robot.py)
-CENTER_DIST = 19.5
-L1 = 25
-L2 = 40
 
 OUTPUT_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),

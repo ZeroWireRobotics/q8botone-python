@@ -6,10 +6,26 @@ Python class for FK/IK calculations on Q8bot.
 
 import math
 
+# Q8botOne's geometry, from its CAD (confirmed to match the robot's
+# linkages), mm - the one place it's set: robot.py, the gait tables exported
+# for the firmware (export_gait_tables.py) and the IMU's calibration
+# (imu.py) all take it from here. Until 2026-11 these were older round
+# numbers (19.5 / 25 / 40, track 80, wheelbase 78), which stood the robot
+# 1-2 mm lower than asked and leaned it ~15% further than a roll called.
+CENTER_DIST = 20.0  # between each leg's two servo shafts
+L1 = 24.0           # upper links, shaft to knee
+L2 = 39.0           # lower links, knee to foot
+# Between the feet, for body tilt (Q8Bot.set_stance()): side to side, which a
+# roll tilts across, and front to back - each leg's shafts are 80 mm from the
+# other end's - which a pitch tilts along
+TRACK_MM = 68.6
+WHEELBASE_MM = 80.0
+
+
 # d - distance between motors; l1/l1p - upper linkage length; l2/l2p - lower linkage length
 # Unit is in mm.
 class k_solver:
-    def __init__(self, d = 19.5, l1 = 25, l2 = 40, l1p = 25, l2p = 40):
+    def __init__(self, d = CENTER_DIST, l1 = L1, l2 = L2, l1p = L1, l2p = L2):
         self.d = d
         self.l1 = l1
         self.l2 = l2
