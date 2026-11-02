@@ -134,6 +134,18 @@ DEFAULT_TELEMETRY_HZ = 0
 DEFAULT_SENSOR_HZ = 0
 SENSOR_HISTORY_LENGTH = 600
 
+# Keeping level (set_keep_level()): the IMU is read at least this often
+# meanwhile - each reading is a correction, and a slow one corrects late.
+# Calibrating it (calibrate_imu()) reads joints and IMU at least this often.
+LEVEL_SENSOR_HZ = 50
+CALIBRATION_TELEMETRY_HZ = 20
+CALIBRATION_SENSOR_HZ = 50
+# A new tilt correction only goes out once it's moved this far (deg): on a
+# floor that stays put, keeping level sends nothing at all
+LEVEL_RESEND_DEG = 0.1
+# After a gait stops, keeping level waits this long (s) for the body to settle
+LEVEL_SETTLE_S = 0.5
+
 # Streaming advances the trajectory by elapsed time, not by one frame per
 # wakeup, so gait speed doesn't depend on how precisely the host can sleep -
 # Windows' timer granularity alone makes a 5ms sleep land nearer 8ms, which
@@ -278,6 +290,20 @@ class Q8Bot:
         self._damping = False          # see set_joint_mode()/_damping_tick()
         self._damping_last_echo = 0.0
         self._damping_anchor = None    # last pose _damping_tick() committed as the goal
+        self._stance = (0.0, 0.0, 0.0, 0.0)  # set_stance()'s dx, dy, roll, pitch - what keep level adds to
+        self._stance_gliding_until = 0.0     # a stance move's glide: keep level waits it out
+        # The IMU (an MPU6050 on the Qwiic port), once calibrated - see
+        # calibrate_imu(). q8bot.imu needs numpy, so it's only imported then.
+        self._imu = None
+        self._imu_mount = None
+        self._attitude = None
+        self._imu_t = None             # the robot's clock at the last IMU reading taken in
+        self._body_tilt = None         # (roll, pitch) against gravity, from it
+        self._body_heading = None      # and which way it points, from its gyro
+        self._leveller = None
+        self._keep_level = False
+        self._level_sent = None        # the (roll, pitch) keep level last sent
+        self._calibrating = False
         self._connected = True
         self._last_error = None
 
@@ -572,12 +598,20 @@ class Q8Bot:
             self._mode = Mode.IDLE
 
             self.stand()
+            # The body rocks on for a moment after a gait: keep level lets
+            # it settle rather than chase it
+            self._stance_gliding_until = time.monotonic() + LEVEL_SETTLE_S
 
     @_needs_link
     def stand(self, dur=0):
-        """Move to the current gait's neutral stance, clearing any trim."""
+        """Move to the current gait's neutral stance, clearing any trim -
+        keeping level, if that's on (set_keep_level())."""
         with self._lock:
             self._trimmed = False
+            self._stance = (0.0, 0.0, 0.0, 0.0)
+            self._stance_gliding_until = time.monotonic() + dur / 1000
+            if self._levelling() and any(self._leveller.correction):
+                return self._level(dur)
             return self._move_to(self._pos_x, self._pos_y, dur)
 
     @_needs_link
@@ -601,6 +635,10 @@ class Q8Bot:
         small-angle approximation of a body rotation - good enough to look and
         behave right, and it needs no model the solver doesn't already have.
 
+        With keep level on (set_keep_level()), roll and pitch are the body's
+        tilt against gravity rather than against the ground under its feet:
+        all-zero holds it level on a slope.
+
         Returns:
             bool: False if not idle, or if any leg's target is unreachable.
         """
@@ -608,41 +646,51 @@ class Q8Bot:
             if self._mode is not Mode.IDLE:
                 return False
 
+            self._stance = (dx, dy, roll, pitch)
+            if self._levelling():
+                return self._level(0)
+
             if not (dx or dy or roll or pitch):
                 if self._trimmed:
                     self._trimmed = False
+                    self._stance_gliding_until = time.monotonic() + 0.3
                     return self._move_to(self._pos_x, self._pos_y, 300)
                 return True
 
             self._trimmed = True
-            x = self._pos_x + dx
-            y = self._pos_y + dy
 
             if not (roll or pitch):
                 # Every leg lands on the same target, so one mirrored write
                 # does it - a quarter of the payload and no per-leg IK.
-                return self._move_to(x, y, 0)
+                return self._move_to(self._pos_x + dx, self._pos_y + dy, 0)
 
-            # Raising a corner means extending that leg, so height offsets go
-            # straight onto y. Half-spacing because a tilt lifts one side by
-            # as much as it drops the other.
-            roll_mm = (TRACK_MM / 2) * math.tan(math.radians(roll))
-            pitch_mm = (WHEELBASE_MM / 2) * math.tan(math.radians(pitch))
-            offsets = {
-                'FL': +roll_mm + pitch_mm,
-                'FR': -roll_mm + pitch_mm,
-                'BL': +roll_mm - pitch_mm,
-                'BR': -roll_mm - pitch_mm,
-            }
-
-            angles, reachable = [], True
-            for leg in LEG_ORDER:
-                q1, q2, ok = self.leg.ik_solve(x, y + offsets[leg], True, 1)
-                angles += [q1, q2]
-                reachable = reachable and ok
-
+            angles, reachable = self._stance_angles(dx, dy, roll, pitch)
             self._guard(self.link.move_all, angles, 0)
             return reachable
+
+    def _stance_angles(self, dx, dy, roll, pitch):
+        """The eight joint angles for a stance (see set_stance()), and whether
+        every leg can reach its target."""
+        x = self._pos_x + dx
+        y = self._pos_y + dy
+        # Raising a corner means extending that leg, so height offsets go
+        # straight onto y. Half-spacing because a tilt lifts one side by
+        # as much as it drops the other.
+        roll_mm = (TRACK_MM / 2) * math.tan(math.radians(roll))
+        pitch_mm = (WHEELBASE_MM / 2) * math.tan(math.radians(pitch))
+        offsets = {
+            'FL': +roll_mm + pitch_mm,
+            'FR': -roll_mm + pitch_mm,
+            'BL': +roll_mm - pitch_mm,
+            'BR': -roll_mm - pitch_mm,
+        }
+
+        angles, reachable = [], True
+        for leg in LEG_ORDER:
+            q1, q2, ok = self.leg.ik_solve(x, y + offsets[leg], True, 1)
+            angles += [q1, q2]
+            reachable = reachable and ok
+        return angles, reachable
 
     #-------------------#
     # Gait selection    #
@@ -885,6 +933,269 @@ class Q8Bot:
         """
         with self._reply_lock:
             return list(self._sensor_history)
+
+    #-------------------#
+    # IMU               #
+    #-------------------#
+    # An MPU6050 on the robot's Qwiic port, once calibrate_imu() has found
+    # how it's mounted: the body's tilt against gravity (body_tilt), and
+    # keeping it level (set_keep_level()). All of it runs here, on readings
+    # the robot sends - nothing new on the robot. Needs numpy (q8bot.imu).
+
+    def _imu_module(self):
+        if self._imu is None:
+            from . import imu
+            self._imu = imu
+        return self._imu
+
+    @property
+    def imu_mount(self):
+        """
+        The IMU's calibrated mounting (a q8bot.imu.Mount), or None. Set it to
+        one saved earlier - imu.Mount.load() reads the one calibrate_imu()
+        saved - instead of calibrating again; it belongs to the robot it was
+        calibrated on.
+        """
+        return self._imu_mount
+
+    @imu_mount.setter
+    def imu_mount(self, mount):
+        imu = self._imu_module()
+        with self._lock:
+            self._imu_mount = mount
+            self._attitude = imu.Attitude(mount) if mount is not None else None
+            self._leveller = imu.Leveller()
+            self._imu_t = None
+            self._body_tilt = self._body_heading = None
+            self._level_sent = None
+            if mount is None:
+                self._keep_level = False
+
+    @property
+    def body_tilt(self):
+        """
+        The body's (roll, pitch) against gravity, degrees - roll + leaning
+        right, pitch + nose up, as set_stance() - from the IMU. None until
+        it's calibrated (imu_mount) and reading: needs sensor_hz > 0, or
+        keep level on.
+        """
+        return self._body_tilt
+
+    @property
+    def body_heading(self):
+        """
+        Which way the body points, degrees anticlockwise seen from above,
+        from the IMU's gyro - relative: 0 where it pointed when the IMU was
+        first read, and drifting slowly (a few degrees a minute is typical;
+        nothing holds it the way gravity holds the tilt). None until it's
+        calibrated (imu_mount) and reading.
+        """
+        return self._body_heading
+
+    @property
+    def keep_level(self):
+        """True while set_keep_level() is on."""
+        return self._keep_level
+
+    @property
+    def calibrating_imu(self):
+        """True while calibrate_imu() has the robot tilting."""
+        return self._calibrating
+
+    @_needs_link
+    def set_keep_level(self, on=True):
+        """
+        Hold the body level against gravity while standing, with the IMU: on
+        a slope, or a board being tipped under it, the legs take up the
+        difference. Stance and tilt still work - set_stance()'s roll and
+        pitch become the tilt held against gravity. While a gait or routine
+        runs it waits; once the robot stands again it carries on.
+
+        Each IMU reading corrects the tilt the legs are asked for (see
+        imu.Leveller), so it reads the IMU at least LEVEL_SENSOR_HZ meanwhile.
+        Tipped past 45 deg - fallen over, or picked up - it lets go of the
+        correction until the robot is the right way up again. Raw move_all()
+        calls are overridden by it: it owns the stance while it's on.
+
+        Needs the IMU calibrated: imu_mount, or a mount saved by
+        calibrate_imu(), which this loads.
+
+        Returns:
+            bool: False if there's no calibration to go on.
+        """
+        imu = self._imu_module()
+        with self._lock:
+            if not on:
+                if self._keep_level:
+                    self._keep_level = False
+                    if self._mode is Mode.IDLE and self._level_sent is not None and not self._calibrating:
+                        dx, dy, roll, pitch = self._stance
+                        angles, _ = self._stance_angles(dx, dy, roll, pitch)
+                        self._guard(self.link.move_all, angles, 300)     # the correction eased off
+                    self._level_sent = None
+                return True
+            if self._imu_mount is None:
+                mount = imu.Mount.load()
+                if mount is None:
+                    Q8Logger.warning("Keeping level needs the IMU calibrated first - see calibrate_imu().")
+                    return False
+                self.imu_mount = mount
+            self._leveller.reset()
+            self._level_sent = None
+            self._keep_level = True
+            return True
+
+    @_needs_link
+    def calibrate_imu(self, save=True):
+        """
+        Find how the MPU6050 is mounted: the robot stands, then eases its body
+        into four tilts on its own feet, holding each still while the IMU is
+        read - about 15 s. Which way up the chassis is in each comes from the
+        joint angles (imu.floor_up), which way up the chip is from its
+        accelerometer; the rotation between them is the mounting. Any
+        mounting - nothing about it is assumed. Its gyro's offset is measured
+        too.
+
+        Have the robot on a flat floor, motors on, and leave it be. Blocks
+        until done - but doesn't hold the robot the whole time the way a
+        routine does: replies have to keep coming in.
+
+        Args:
+            save: also save it (imu.MOUNT_FILE), for set_keep_level() and
+                imu.Mount.load() next time
+
+        Returns:
+            imu.Mount, also kept as imu_mount.
+
+        Raises:
+            ValueError: saying why it couldn't - no IMU answering, motors
+            off, the robot moved, a loose sensor.
+        """
+        imu = self._imu_module()
+        keep = self._keep_level
+        with self._lock:
+            self._keep_level = False
+            self._calibrating = True             # joints and IMU read faster meanwhile
+            self.idle()
+            self._exit_damping()
+        try:
+            if not self.torque:
+                raise ValueError("the motors are off - turn them on, with the robot on the floor")
+            address = self._wait_for_imu(imu)
+            Q8Logger.info("Calibrating the IMU: the robot tilts four ways - leave it be.")
+            self.stand(500)
+            time.sleep(1.0)
+            poses, tilt = [], (0, 0)
+            for target in imu.CALIBRATION_TILTS:
+                for roll, pitch in imu.ease(tilt, target):
+                    self.set_stance(roll=roll, pitch=pitch)
+                    time.sleep(imu.EASE_STEP_S)
+                tilt = target
+                time.sleep(imu.SETTLE_S)
+                poses.append(self._hold_still(imu, address))
+                for roll, pitch in imu.ease(tilt, (0, 0)):
+                    self.set_stance(roll=roll, pitch=pitch)
+                    time.sleep(imu.EASE_STEP_S)
+                tilt = (0, 0)
+            mount = imu.fit_mount(poses, address)
+        finally:
+            self._calibrating = False
+            if self._connected:
+                self.set_stance()
+        self.imu_mount = mount
+        if save:
+            mount.save()
+        self._keep_level = keep
+        Q8Logger.info(f"IMU calibrated: {mount.describe()} - readings within {mount.fit:.1f} deg "
+                      f"of that; gyro offset {math.degrees(float((mount.gyro_bias ** 2).sum()) ** 0.5):.1f} deg/s.")
+        return mount
+
+    def _wait_for_imu(self, imu, timeout=1.5):
+        """The answering MPU6050's address - waiting for a reading if none
+        has come yet. Raises ValueError if none does."""
+        end = time.monotonic() + timeout
+        while True:
+            snapshot = self.sensors
+            if imu.reading(snapshot) is not None:
+                return next(s.address for s in snapshot.sensors if s.kind == imu.KIND)
+            if time.monotonic() > end:
+                raise ValueError("no MPU6050 is answering")
+            time.sleep(0.05)
+
+    def _hold_still(self, imu, address):
+        """One calibration pose, the robot holding it: the IMU's mean readings
+        and the joint angles' up, over GATHER_S."""
+        history = self.sensor_history
+        since = history[-1].t_ms / 1000 if history else -1.0
+        angles = []
+        end = time.monotonic() + imu.GATHER_S
+        while time.monotonic() < end:
+            sample = self.telemetry
+            if sample is not None:
+                angles.append([ticks_to_degrees(t) for t in sample['position']])
+            time.sleep(0.03)
+        readings = [r for r in (imu.reading(s, address) for s in self.sensor_history) if r and r[0] > since]
+        return imu.still_pose(readings, angles)
+
+    def _levelling(self):
+        """Keep level is on and in charge: standing, motors on and stiff, an IMU calibrated."""
+        return (self._keep_level and self._attitude is not None and not self._calibrating
+                and self._mode is Mode.IDLE and not self._damping and self.torque)
+
+    def _level(self, dur):
+        """The stance asked for plus keep level's correction, sent - unless
+        a leg can't reach it, when the correction stays where it was."""
+        dx, dy, roll, pitch = self._stance
+        c_roll, c_pitch = self._leveller.correction
+        angles, reachable = self._stance_angles(dx, dy, roll + c_roll, pitch + c_pitch)
+        if not reachable:
+            return False
+        self._level_sent = (roll + c_roll, pitch + c_pitch)
+        return self._guard(self.link.move_all, angles, dur)
+
+    def _imu_tick(self):
+        """The IMU's new readings into the body's orientation - and, keeping
+        level, a correction from them. On the tick thread."""
+        if self._attitude is None:
+            return
+        imu = self._imu
+        address = self._imu_mount.address
+        new = []
+        with self._reply_lock:
+            history = reversed(self._sensor_history)       # newest first, back to the last one taken
+            for snapshot in history:
+                reading = imu.reading(snapshot, address)
+                if reading is None:
+                    continue
+                if self._imu_t is not None and reading[0] <= self._imu_t:
+                    if not new and reading[0] < self._imu_t - 1.0:
+                        new.append(reading)                 # the robot's clock started over: it rebooted
+                    break
+                new.append(reading)
+        if not new:
+            return
+        for reading in reversed(new):
+            self._attitude.update(*reading)
+        self._imu_t = new[0][0]
+        if not self._attitude.ready:
+            return
+        tilt = self._attitude.tilt()
+        self._body_tilt = tilt
+        self._body_heading = self._attitude.heading()
+        if not self._levelling() or time.monotonic() < self._stance_gliding_until:
+            self._leveller.pause()
+            return
+        before = self._leveller.correction
+        self._leveller.update(self._attitude.time, tilt, self._stance[2:])
+        if self._leveller.tipped:
+            if self._level_sent is not None and any(self._level_sent):
+                self._level(300)                    # let go: back to the plain stance
+            return
+        target = (self._stance[2] + self._leveller.correction[0], self._stance[3] + self._leveller.correction[1])
+        if self._level_sent is not None and max(abs(a - b) for a, b in zip(target, self._level_sent)) < LEVEL_RESEND_DEG:
+            return
+        if not self._level(0):
+            self._leveller.hold(before)
 
     #-------------------#
     # Scripted routines #
@@ -1166,6 +1477,14 @@ class Q8Bot:
             self._request_telemetry_if_due()
             self._request_sensors_if_due()
             self._drain_replies()
+            try:
+                self._imu_tick()
+            except Exception as exc:
+                # Not the link's fault - an exception out of _tick() would
+                # count as one (_run) and drop the robot. Keep level stops.
+                if self._keep_level:
+                    self._keep_level = False
+                    Q8Logger.error(f"Keeping level stopped: {exc}")
 
     def _damping_tick(self):
         """
@@ -1235,20 +1554,24 @@ class Q8Bot:
 
     def _request_telemetry_if_due(self):
         """One ask per interval. Runs on the tick thread, like the keep-alive."""
-        if self._telemetry_hz <= 0:
+        hz = max(self._telemetry_hz, CALIBRATION_TELEMETRY_HZ if self._calibrating else 0)
+        if hz <= 0:
             return
         now = time.monotonic()
-        if now - self._telemetry_last_request < 1.0 / self._telemetry_hz:
+        if now - self._telemetry_last_request < 1.0 / hz:
             return
         self._telemetry_last_request = now
         self._guard(self.link.request_telemetry)
 
     def _request_sensors_if_due(self):
-        """Same as _request_telemetry_if_due(), for the Qwiic sensors."""
-        if self._sensor_hz <= 0:
+        """Same as _request_telemetry_if_due(), for the Qwiic sensors - faster
+        while keeping level or calibrating the IMU, which run on them."""
+        hz = max(self._sensor_hz, LEVEL_SENSOR_HZ if self._keep_level else 0,
+                 CALIBRATION_SENSOR_HZ if self._calibrating else 0)
+        if hz <= 0:
             return
         now = time.monotonic()
-        if now - self._sensor_last_request < 1.0 / self._sensor_hz:
+        if now - self._sensor_last_request < 1.0 / hz:
             return
         self._sensor_last_request = now
         self._guard(self.link.request_sensors)

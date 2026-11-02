@@ -92,13 +92,17 @@ turn it off and on to use its own buttons and joystick again. You can also
 drive from the app with an Xbox controller (**Xbox Controller**, then
 **Connect**).
 
+With an MPU6050 on the robot's Qwiic port, Manual Control has two more
+buttons: **Calibrate IMU** (the robot tilts itself four ways, about 15 s, to
+find how the sensor is mounted - once) and **Keep Level**, which holds the
+body level while the robot stands, whatever the ground under it does.
+
 With the simulator (q8botone-sim, checked out beside this repository)
 installed in the same environment - `pip install -e ../q8botone-sim` - the 3D
 view shows the robot's simulated model, live. Connected to a robot, the model
-takes the robot's measured joint angles, on a test stand. With an MPU6050 on
-the robot's Qwiic port, **Calibrate IMU** (the robot tilts itself four ways,
-about 15 s) finds how the sensor is mounted, and the model then comes off the
-stand: tilted, turned and walked along as the robot is. No robot to hand?
+takes the robot's measured joint angles, on a test stand - and with the
+MPU6050 calibrated, comes off the stand: tilted, turned and walked along as
+the robot is. No robot to hand?
 Pick **Simulated robot** in the Connection panel's list and click
 **Connect**: the model is then the robot, and the app drives it as it would
 the real one, with everything but the servos' current and temperature

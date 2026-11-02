@@ -360,6 +360,8 @@ class ManualControlPanel(QGroupBox):
     joint_mode_requested = Signal(str)   # 'off' | 'damping' | 'on'
     jump_requested = Signal()
     greet_requested = Signal()
+    keep_level_toggled = Signal(bool)
+    calibrate_imu_requested = Signal()
     routine_play_requested = Signal(object)    # path
     routine_teach_requested = Signal()          # an empty slot was clicked
     routine_edit_requested = Signal(object)    # path
@@ -376,6 +378,7 @@ class ManualControlPanel(QGroupBox):
     JOINT_MODES = ('off', 'damping', 'on')
     JOINT_MODE_LABELS = {'off': 'Off', 'damping': 'Damping', 'on': 'On'}
     JOINT_MODE_COLORS = {'on': '#1a7f37', 'damping': '#8250df', 'off': '#b3262b'}
+    KEEP_LEVEL_COLOR = '#0e7490'
 
     # How many saved-routine rows to reserve. A fixed number rather than a
     # scrolling list, so the layout doesn't resize itself under the user as
@@ -458,6 +461,22 @@ class ManualControlPanel(QGroupBox):
         self._lock_width_to_widest(self.hold_pose_button, [
             (False, "Hold Pose: OFF"), (True, "Hold Pose: ON")])
 
+        # The IMU's two: only there once an MPU6050 answers on the Qwiic
+        # port (set_imu()). Keep Level drives the robot - unlike Hold Pose,
+        # which only changes the pads - so it goes through MainWindow.
+        self.keep_level_button = QPushButton("Keep Level: OFF")
+        self.keep_level_button.setCheckable(True)
+        self.keep_level_button.toggled.connect(self._keep_level_toggled)
+        self._lock_width_to_widest(self.keep_level_button, [
+            (False, "Keep Level: OFF"), (True, "Keep Level: ON")])
+        self.calibrate_imu_button = QPushButton("Calibrate IMU")
+        self.calibrate_imu_button.setToolTip(
+            "Find which way the MPU6050 is mounted, so the robot can tell how it's tilted.\n"
+            "It stands and tilts its body four ways on its own feet, for about 15 s:\n"
+            "have it on a flat floor, motors on, and leave it be until it's done.")
+        self.calibrate_imu_button.clicked.connect(self.calibrate_imu_requested.emit)
+        self._imu_state = 'unset'               # set_imu(None) below hides both
+
         # One-shot scripted routines - the same jump/greet the gamepad's
         # left/top buttons trigger, just without a pad to hold one.
         self.jump_button = QPushButton("Jump")
@@ -515,9 +534,11 @@ class ManualControlPanel(QGroupBox):
         actions_col.addLayout(joint_mode_labels_row)
         actions_col.addSpacing(8)
         actions_col.addWidget(self.hold_pose_button)
+        actions_col.addWidget(self.keep_level_button)
         actions_col.addSpacing(12)
         actions_col.addWidget(self.jump_button)
         actions_col.addWidget(self.greet_button)
+        actions_col.addWidget(self.calibrate_imu_button)
         actions_col.addStretch()
         grid.addLayout(actions_col, 0, 3, 4, 1)
 
@@ -578,6 +599,7 @@ class ManualControlPanel(QGroupBox):
         self.set_scripted_routines_enabled(False)
         self.set_routines([])
         self.set_saved_routines_enabled(False)
+        self.set_imu(None)
 
     @staticmethod
     def _lock_width_to_widest(button, states):
@@ -686,10 +708,55 @@ class ManualControlPanel(QGroupBox):
         """
         Jump/Greet take the robot over for a few seconds - disabled while
         disconnected or while one is already running, same as the gamepad's
-        equivalent buttons are simply ignored during that window.
+        equivalent buttons are simply ignored during that window. Calibrate
+        IMU too.
         """
         self.jump_button.setEnabled(enabled)
         self.greet_button.setEnabled(enabled)
+        self.calibrate_imu_button.setEnabled(enabled)
+
+    #-------------------#
+    # IMU               #
+    #-------------------#
+
+    def set_imu(self, state):
+        """
+        What the robot's IMU allows: None - no MPU6050 answering (both
+        buttons hidden); 'uncalibrated' - Calibrate IMU, Keep Level waiting
+        on it; 'calibrated' - both. Safe to call every poll.
+        """
+        if state == self._imu_state:
+            return
+        self._imu_state = state
+        self.keep_level_button.setVisible(state is not None)
+        self.calibrate_imu_button.setVisible(state is not None)
+        calibrated = state == 'calibrated'
+        self.calibrate_imu_button.setText("Recalibrate IMU" if calibrated else "Calibrate IMU")
+        self.keep_level_button.setEnabled(calibrated)
+        self.keep_level_button.setToolTip(
+            "Hold the body level with the MPU6050 while the robot stands - on a slope,\n"
+            "or a board tipped under it, the legs take up the difference. Body Tilt then\n"
+            "tilts it against gravity rather than against the ground. Waits while it walks."
+            if calibrated else "Calibrate the IMU first, so the robot knows which way the sensor faces.")
+        if not calibrated:
+            self.show_keep_level(False)
+
+    def show_keep_level(self, on):
+        """Point Keep Level at the robot's state without emitting."""
+        blocked = self.keep_level_button.blockSignals(True)
+        self.keep_level_button.setChecked(on)
+        self.keep_level_button.blockSignals(blocked)
+        self._paint_keep_level(on)
+
+    def _keep_level_toggled(self, checked):
+        self._paint_keep_level(checked)
+        self.keep_level_toggled.emit(checked)
+
+    def _paint_keep_level(self, on):
+        self.keep_level_button.setText(f"Keep Level: {'ON' if on else 'OFF'}")
+        # A solid fill, as Hold Pose has - see _hold_pose_toggled()
+        self.keep_level_button.setStyleSheet(
+            f"QPushButton {{ background-color: {self.KEEP_LEVEL_COLOR}; color: white; }}" if on else "")
 
     #-------------------#
     # Saved routines    #

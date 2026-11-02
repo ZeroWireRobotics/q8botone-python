@@ -8,8 +8,8 @@ depends on what's connected:
   a robot          what the robot measures: its eight joint angles from
                    telemetry, shown on a test stand - the joints alone don't
                    say how the robot is tilted. With an MPU6050 on the
-                   robot's Qwiic port, once it's calibrated (Calibrate IMU:
-                   the robot tilts itself a few ways), the model comes off
+                   robot's Qwiic port, once it's calibrated (Calibrate IMU in
+                   Manual Control: the robot tilts itself a few ways), the model comes off
                    the stand: the IMU tilts and turns it, its lowest point
                    rests on the floor, and its feet on the floor walk it along.
   the simulated    the model is the robot (SIMULATED_ROBOT in the Connection
@@ -38,7 +38,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QGroupBox, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from ..helpers import Q8Logger
@@ -118,10 +118,6 @@ FOLLOW_TELEMETRY_HZ = 50
 # rate has been tried on the robot's radio link yet.
 FOLLOW_IMU_HZ = 50
 IMU_STALE_S = 1.0                   # an IMU silent this long is gone: back onto the stand
-
-# The IMU's calibrated mounting - this robot's, so like the taught routines
-# it's kept out of git (see .gitignore)
-IMU_MOUNT_FILE = Path(__file__).resolve().parent.parent / 'imu_mount.json'
 
 # The Connection panel's name for the simulated robot - never a serial port's
 SIMULATED_ROBOT = "Simulated robot"
@@ -204,8 +200,6 @@ class LiveModel(QWidget):
     which one it is decides what the model follows.
     """
 
-    calibrate_requested = Signal()          # Calibrate IMU - MainWindow runs calibrate_imu()
-
     def __init__(self, simulator, parent=None):
         super().__init__(parent)
         self._imu = simulator.imu
@@ -220,11 +214,10 @@ class LiveModel(QWidget):
         # The robot's IMU, while following it: its calibrated mounting (None
         # until calibrated), the orientation tracked from it, and the robot
         # clock time of the last reading taken in
-        self.mount = self._imu.Mount.load(IMU_MOUNT_FILE)
+        self.mount = self._imu.Mount.load()         # (q8bot.imu.MOUNT_FILE)
         self._attitude = None
         self._imu_t = None
-        self._new_mount = None                  # handed over by calibrate_imu() on the worker
-        self.calibrating = False
+        self._new_mount = None                  # handed over by set_mount(), from a worker
 
         self.view = simulator.ModelView(self.sim)
         self.view.setToolTip("Drag to turn, scroll to zoom.")
@@ -235,18 +228,10 @@ class LiveModel(QWidget):
         self.reset_button = QPushButton("Reset")
         self.reset_button.setToolTip("Put the model back where it started, in the middle of the floor")
         self.reset_button.clicked.connect(self.reset)
-        self.calibrate_button = QPushButton("Calibrate IMU")
-        self.calibrate_button.setToolTip(
-            "Find which way the robot's MPU6050 is mounted, so the model can show the robot's tilt.\n"
-            "The robot stands and tilts its body four ways on its own feet, for about 15 s:\n"
-            "have it on a flat floor, motors on, and leave it be until it's done.")
-        self.calibrate_button.clicked.connect(self.calibrate_requested)
-        self.calibrate_button.hide()
 
         row = QHBoxLayout()
         row.setContentsMargins(8, 6, 8, 0)
         row.addWidget(self.status, 1)
-        row.addWidget(self.calibrate_button)
         row.addWidget(self.reset_button)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -309,7 +294,6 @@ class LiveModel(QWidget):
         self.sim.show_imu(None)
         self._attitude = None
         if not robot:
-            self.calibrate_button.hide()
             self._simulate_on()                 # set down on the floor in the robot's last pose
         self._shown = None
 
@@ -347,9 +331,6 @@ class LiveModel(QWidget):
         latest = imu.reading(bot.sensors)
         age = bot.sensor_age
         has_imu = latest is not None and age is not None and age < IMU_STALE_S
-        self.calibrate_button.setVisible(has_imu)
-        self.calibrate_button.setEnabled(not self.calibrating)
-        self.calibrate_button.setText("Recalibrate IMU" if self.mount is not None else "Calibrate IMU")
         use_imu = has_imu and self.mount is not None and imu.reading(bot.sensors, self.mount.address) is not None
         if use_imu == self.sim.on_stand:        # onto the stand, or off it onto the floor
             self.sim.set_on_stand(not use_imu)
@@ -362,8 +343,8 @@ class LiveModel(QWidget):
             angles = [ticks_to_degrees(t) for t in sample['position']]
             ready = self._attitude is not None and self._attitude.ready
             self.sim.show_pose(angles, self._attitude.orientation() if use_imu and ready else None)
-        if self.calibrating:
-            return "Robot: calibrating - leave it be"
+        if bot.calibrating_imu:
+            return "Robot: calibrating the IMU - leave it be"
         if sample is None:
             return "Waiting for the robot..."
         if use_imu:
@@ -396,75 +377,10 @@ class LiveModel(QWidget):
             self._imu_t = new[0][0]
         return bool(new)
 
-    def calibrate_imu(self, bot):
-        """
-        Calibrate IMU, on the routine worker (MainWindow._run_routine): the
-        robot stands, then eases its body into four tilts on its own feet,
-        holding each still while the IMU is read. Which way up the chassis is
-        in each comes from the joint angles (Q8Sim.floor_up), which way up the
-        chip is from its accelerometer; the rotation between them is the
-        mounting, saved to IMU_MOUNT_FILE.
-        """
-        imu = self._imu
-        self.calibrating = True
-        try:
-            latest = imu.reading(bot.sensors)
-            if latest is None:
-                raise ValueError("no MPU6050 is answering")
-            address = next(s.address for s in bot.sensors.sensors if s.kind == imu.KIND)
-            if not bot.torque:
-                raise ValueError("the motors are off - turn them on, with the robot on the floor")
-            Q8Logger.info("Calibrating the IMU: the robot tilts four ways - leave it be.")
-            bot.stand(500)
-            time.sleep(1.0)
-            poses, tilt = [], (0, 0)
-            for target in imu.CALIBRATION_TILTS:
-                for roll, pitch in imu.ease(tilt, target):
-                    bot.set_stance(roll=roll, pitch=pitch)
-                    time.sleep(imu.EASE_STEP_S)
-                tilt = target
-                time.sleep(imu.SETTLE_S)
-                poses.append(self._hold_still(bot, address))
-                for roll, pitch in imu.ease(tilt, (0, 0)):
-                    bot.set_stance(roll=roll, pitch=pitch)
-                    time.sleep(imu.EASE_STEP_S)
-                tilt = (0, 0)
-            mount = imu.fit_mount(poses, address)
-            mount.save(IMU_MOUNT_FILE)
-            self._new_mount = mount
-            Q8Logger.info(f"IMU calibrated: {mount.describe()} - readings within {mount.fit:.1f} deg "
-                          f"of that; gyro offset {np.degrees(np.linalg.norm(mount.gyro_bias)):.1f} deg/s.")
-        except ValueError as exc:
-            Q8Logger.error(f"IMU calibration didn't work: {exc}. The model stays as it was.")
-        finally:
-            self.calibrating = False
-            if bot.connected:
-                bot.set_stance()
-
-    def _hold_still(self, bot, address):
-        """One calibration pose, the robot holding it: the IMU's mean readings
-        and the joint angles' up, over GATHER_S. (Worker thread.)"""
-        imu = self._imu
-        history = bot.sensor_history
-        since = history[-1].t_ms / 1000 if history else -1.0
-        angles = []
-        end = time.monotonic() + imu.GATHER_S
-        while time.monotonic() < end:
-            sample = bot.telemetry
-            if sample is not None:
-                angles.append([ticks_to_degrees(t) for t in sample['position']])
-            time.sleep(0.03)
-        readings = [r for r in (imu.reading(s, address) for s in bot.sensor_history) if r and r[0] > since]
-        if len(readings) < 5 or not angles:
-            raise ValueError("the robot stopped answering")
-        accel = np.array([r[1] for r in readings])
-        gyro = np.array([r[2] for r in readings])
-        if np.linalg.norm(gyro.std(0)) > 0.05:
-            raise ValueError("the robot wasn't still")
-        up = self.sim.floor_up(np.mean(angles, 0))
-        if up is None:
-            raise ValueError("its legs were in a pose they can't close")
-        return accel.mean(0), gyro.mean(0), up
+    def set_mount(self, mount):
+        """The IMU's new calibration (Q8Bot.calibrate_imu()) - from any thread:
+        it's taken up on the next frame."""
+        self._new_mount = mount
 
 
 class ViewerPanel(QGroupBox):
@@ -472,8 +388,6 @@ class ViewerPanel(QGroupBox):
     The robot in 3D: the simulator's live model if it's installed (see
     LiveModel), else the STL to orbit. Click-drag to rotate, scroll to zoom.
     """
-
-    calibrate_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__("", parent)
@@ -489,7 +403,6 @@ class ViewerPanel(QGroupBox):
             except Exception as exc:
                 Q8Logger.error(f"Could not start the simulated model, showing the STL instead: {exc}")
         if self.live is not None:
-            self.live.calibrate_requested.connect(self.calibrate_requested)
             layout.addWidget(self.live)
             Q8Logger.info("3D view: the simulated model - it follows the robot you connect.")
             return
@@ -526,10 +439,10 @@ class ViewerPanel(QGroupBox):
         """The live model's own link, for a Q8Bot with no robot. Needs can_simulate."""
         return self.live.simulated_link()
 
-    def calibrate_imu(self, bot):
-        """LiveModel.calibrate_imu() - blocks for seconds, so on a worker."""
+    def set_mount(self, mount):
+        """The IMU's new calibration, for the live model - from any thread."""
         if self.live is not None:
-            self.live.calibrate_imu(bot)
+            self.live.set_mount(mount)
 
     def set_robot(self, bot):
         if self.live is not None:

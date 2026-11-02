@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import routine_store
+from .. import imu, routine_store
 from ..control_config import get_joystick_direction, get_joystick_magnitude
 from ..espnow import q8_espnow
 from ..helpers import Q8Logger
@@ -146,8 +146,9 @@ class MainWindow(QMainWindow):
         self.connection.gamepad_disconnect_requested.connect(self._disconnect_gamepad)
         self.connection.mode_changed.connect(self._on_mode_changed)
         self.info.sensors_requested.connect(self._open_sensor_window)
-        self.viewer.calibrate_requested.connect(self._calibrate_imu)
         self.manual.gait_selected.connect(self._select_gait)
+        self.manual.keep_level_toggled.connect(self._keep_level_toggled)
+        self.manual.calibrate_imu_requested.connect(self._calibrate_imu)
         self.manual.joint_mode_requested.connect(self._joint_mode_requested)
         self.manual.jump_requested.connect(self._manual_jump)
         self.manual.greet_requested.connect(self._manual_greet)
@@ -183,6 +184,9 @@ class MainWindow(QMainWindow):
             self.connection.set_robot_status(
                 StatusDot.ERROR, "Port failed", f"Could not open {port}: {exc}")
             return
+        # The IMU's mounting, as last calibrated - this robot's, as far as
+        # anything can tell (see imu.MOUNT_FILE)
+        self.bot.imu_mount = imu.Mount.load()
         self.viewer.set_robot(self.bot)
 
         self._port = port
@@ -223,12 +227,28 @@ class MainWindow(QMainWindow):
         return FOLLOW_TELEMETRY_HZ if self.viewer.follows_robot else TELEMETRY_HZ
 
     def _calibrate_imu(self):
-        """The 3D view's Calibrate IMU: the robot tilts itself a few ways while
-        its IMU is read - seconds, on the routine worker like a jump."""
+        """Calibrate IMU: the robot tilts itself a few ways while its IMU is
+        read (Q8Bot.calibrate_imu()) - seconds, on the routine worker like a
+        jump. Saved for next time, and handed to the 3D view."""
         if self.bot is None or not self.bot.connected or self._routine_running():
             return
         bot = self.bot
-        self._run_routine("IMU calibration", lambda: self.viewer.calibrate_imu(bot))
+
+        def calibrate():
+            try:
+                mount = bot.calibrate_imu()
+            except ValueError as exc:
+                Q8Logger.error(f"IMU calibration didn't work: {exc}. The last calibration stays.")
+                return
+            self.viewer.set_mount(mount)
+        self._run_routine("IMU calibration", calibrate)
+
+    def _keep_level_toggled(self, on):
+        if self.bot is None or not self.bot.connected:
+            return
+        if self.bot.set_keep_level(on):
+            Q8Logger.info("Keeping the body level with the IMU." if on else "Keep Level off.")
+        self.manual.show_keep_level(self.bot.keep_level)
 
     def _disconnect_robot(self):
         self._close_teach_dialog()   # teaching needs a live robot
@@ -251,6 +271,7 @@ class MainWindow(QMainWindow):
         self.manual.set_joint_mode(None)
         self.manual.set_scripted_routines_enabled(False)
         self.manual.set_saved_routines_enabled(False)
+        self.manual.set_imu(None)
         self._set_status("Not connected")
         Q8Logger.info("Disconnected.")
 
@@ -360,6 +381,7 @@ class MainWindow(QMainWindow):
             self.manual.set_joint_mode(None)
             self.manual.set_scripted_routines_enabled(False)
             self.manual.set_saved_routines_enabled(False)
+            self.manual.set_imu(None)
             self._close_teach_dialog()
             self._set_status("Connection lost")
             return
@@ -367,6 +389,7 @@ class MainWindow(QMainWindow):
         self._poll_robot_liveness()
         self.info.set_telemetry(self.bot.telemetry, simulated=self._simulated)
         self._poll_sensors()
+        self._poll_imu()
         self._poll_joint_mode()
         # Telemetry itself stalls during a routine anyway - Q8Bot's tick
         # thread can't get the lock a routine holds for its whole duration,
@@ -791,6 +814,21 @@ class MainWindow(QMainWindow):
             if snapshot is not None and snapshot is not self._plotted_snapshot:
                 self._plotted_snapshot = snapshot
                 self._sensor_window.show_history(self.bot.sensor_history)
+
+    def _poll_imu(self):
+        """Keep Level and Calibrate IMU, for as long as an MPU6050 answers -
+        and Keep Level off if it stops."""
+        age = self.bot.sensor_age
+        present = (imu.reading(self.bot.sensors) is not None
+                   and age is not None and age < SENSOR_SILENT_SECONDS)
+        if not present:
+            if self.bot.keep_level and not self.bot.calibrating_imu:
+                self.bot.set_keep_level(False)
+                Q8Logger.warning("The IMU stopped answering - Keep Level is off.")
+            self.manual.set_imu(None)
+            return
+        self.manual.set_imu('calibrated' if self.bot.imu_mount is not None else 'uncalibrated')
+        self.manual.show_keep_level(self.bot.keep_level)
 
     def _open_sensor_window(self):
         if self._sensor_window is not None:
