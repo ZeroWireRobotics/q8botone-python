@@ -80,7 +80,10 @@ def pyinstaller_args(sim):
     if sim is not None:
         # The simulator, MuJoCo with its native library and window/GL helper,
         # and the model - unpacked to q8botone-model/, where sim.py looks
-        args += ['--collect-submodules', 'q8botone_sim', '--collect-all', 'mujoco', '--collect-all', 'glfw',
+        # (--paths: an editable install, as the README has, hides the package
+        # behind an import hook PyInstaller can't see through)
+        args += ['--paths', str(sim),
+                 '--collect-submodules', 'q8botone_sim', '--collect-all', 'mujoco', '--collect-all', 'glfw',
                  '--add-data', f"{sim / 'model' / 'q8botone.xml'}{sep}q8botone-model",
                  '--add-data', f"{sim / 'model' / 'meshes'}{sep}q8botone-model/meshes"]
     return args + [str(ROOT / 'appbuild' / 'launcher.py')]
