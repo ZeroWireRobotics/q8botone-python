@@ -249,6 +249,51 @@ python example.py walk pose    # only the parts you name
 Read [`example.py`](example.py) alongside it to see each command. Every command is
 described in [`q8bot/robot.py`](q8bot/robot.py).
 
+## Working with an AI coding assistant
+
+An AI coding assistant such as Claude Code or Codex can read this repository
+for you: explain how a part of it works, find where something happens, or
+make a change with you and try it.
+
+Install one - each needs its own account, and signs you in the first time
+you start it:
+
+- **Claude Code** ([quickstart](https://code.claude.com/docs/en/quickstart)) -
+  a Claude subscription or an Anthropic Console account:
+
+  ```
+  irm https://claude.ai/install.ps1 | iex                  # Windows, in PowerShell
+  curl -fsSL https://claude.ai/install.sh | bash           # macOS / Linux
+  ```
+
+- **Codex** ([README](https://github.com/openai/codex)) - a ChatGPT plan or an
+  OpenAI API key:
+
+  ```
+  powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"   # Windows
+  curl -fsSL https://chatgpt.com/codex/install.sh | sh                                      # macOS / Linux
+  ```
+
+Both also come as a VS Code extension, if you'd rather not use a terminal.
+
+Then open a terminal in this folder and run `claude` or `codex`. You don't
+need to explain the project first: both read [`AGENTS.md`](AGENTS.md) when
+they start - a short brief on what's where, how to try a change without a
+robot (the simulator), and which files have to stay in step with the
+firmware. With [q8botone-firmware](https://github.com/ZeroWireRobotics/q8botone-firmware)
+cloned next to this folder, it can follow a command all the way to the robot.
+
+Some things to ask:
+
+- *How does `bot.move('f')` get from my computer to the robot's servos?*
+- *Write a routine that waves the front-left leg, and try it on the simulated robot.*
+- *What would I change to add a gait of my own?*
+
+It edits files and runs commands as it works - how much it asks first
+depends on its settings - so look over what it changed (`git diff`) before
+you keep it. A script that drives the robot moves the real motors: have it
+try things on the simulated robot first.
+
 ## Questions and feedback
 
 If you have any questions, please open an [issue](https://github.com/ZeroWireRobotics/q8botone-python/issues) here on GitHub, or email
