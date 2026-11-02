@@ -13,6 +13,7 @@ are those of kinematics.py. The model itself stays SI.
 '''
 
 import math
+import sys
 from pathlib import Path
 
 import mujoco
@@ -20,7 +21,11 @@ import numpy as np
 
 from .kinematics import Leg, roll_pitch
 
-MODEL = Path(__file__).resolve().parent.parent / 'model' / 'q8botone.xml'
+# The model, beside the package - or, in a packaged app (PyInstaller), where
+# the app unpacks it (the desktop app's build bundles it as q8botone-model/)
+_BUNDLED = getattr(sys, '_MEIPASS', None)
+MODEL = (Path(_BUNDLED) / 'q8botone-model' if _BUNDLED
+         else Path(__file__).resolve().parent.parent / 'model') / 'q8botone.xml'
 LEGS = ('FL', 'FR', 'RL', 'RR')
 SERVOS = ('front', 'rear')
 # The eight servos in the order the library and the robot list them: each
