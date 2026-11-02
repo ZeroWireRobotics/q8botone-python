@@ -7,10 +7,12 @@ model, used two ways -
   as the real robot, or train a controller against it
 - **in a browser**, on [zerowirerobotics.com](https://zerowirerobotics.com)
 
-Work in progress: the robot model is built and checked, can be posed by
-hand, and walks every gait and plays every routine the library has, through
-the library itself. Scripting it from Python, tuning its servos against the
-real robot, and the browser version come next.
+The robot model is built from a simplified CAD of Q8botOne with each part's
+measured mass, centre of mass and moments of inertia, checked, and walks
+every gait and plays every routine the library has, through the library
+itself. It's a plain MuJoCo model (`model/q8botone.xml` and its meshes), so
+it loads as it is into MuJoCo's own viewer, your own visualiser, or a
+training setup. Still to come: tuning its servos against the real robot.
 
 ## Layout
 
@@ -25,9 +27,10 @@ real robot, and the browser version come next.
 | `q8botone_sim/kinematics.py` | A leg's servo angles <-> foot position, and the chassis moving over planted feet, in the library's conventions |
 | `q8botone_sim/sim.py` | The model loaded: servo targets in degrees, feet, the chassis's pose, the test stand, servos on/off |
 | `q8botone_sim/firmware.py` | The robot's firmware redone against the model - gait tables, servo motion profiles, jump, greet, its replies - and stand-ins for the radio link, so the library drives the sim unchanged |
-| `q8botone_sim/imu.py` | An MPU6050 on the robot: calibrating which way it's mounted, tracking the chassis's orientation from it, and a simulated one |
+| `q8botone_sim/imu.py` | A simulated MPU6050, with a real chip's faults - and, under the same names, the q8bot library's calibration and orientation tracking (`q8bot.imu`) |
 | `q8botone_sim/qtview.py` | The model drawn into a Qt widget, for a window of its own - the desktop app's 3D view uses it |
 | `q8botone_sim/poser.py` | A window for posing and driving the robot |
+| `web/export.py` | Writes the model and gait tables the browser version on zerowirerobotics.com loads |
 | `pyproject.toml` | So other environments can install the sim (editable: `pip install -e`) |
 
 ## Setting up
@@ -98,13 +101,14 @@ what's connected:
 - **a robot** - what the robot measures: its eight joint angles from
   telemetry (asked for 50 times a second meanwhile), each leg's loop closed,
   on a test stand - joint angles alone don't say how the robot is tilted
-  - with an **MPU6050** on the robot's Qwiic port, **Calibrate IMU** (above
-    the model) finds which way it's mounted: the robot eases its body into
-    four tilts on its own feet and holds each still, about 15 s. The joint
-    angles say which way up the chassis is in each, the accelerometer which
-    way up the chip is, and the turn between them is the mounting - any
-    mounting, nothing assumed. It's saved (`q8bot/imu_mount.json` in the
-    app, per robot). From then on the model comes off the stand: the IMU
+  - with an **MPU6050** on the robot's Qwiic port, **Calibrate IMU** (in
+    Manual Control; the q8bot library's `Q8Bot.calibrate_imu()`, so it works
+    without the sim too) finds which way it's mounted: the robot eases its
+    body into four tilts on its own feet and holds each still, about 15 s.
+    The joint angles say which way up the chassis is in each, the
+    accelerometer which way up the chip is, and the turn between them is the
+    mounting - any mounting, nothing assumed. It's saved
+    (`q8bot/imu_mount.json`, per robot). From then on the model comes off the stand: the IMU
     (read 50 times a second) tilts and turns it, its lowest point rests on
     the floor, its feet on the floor walk it along - and the board is drawn
     on top with its axes as calibrated (X red, Y green, Z blue; where on the
@@ -121,10 +125,12 @@ The simulated robot answers the app as the robot does - its joint
 angles, a battery that reads full, no Qwiic sensors. Servo current and
 temperature aren't modelled, so they read n/a.
 
-Without the sim installed, the app shows its STL as before.
+Without the sim installed, the app shows its STL as before. The app's
+released builds ([q8botone-python's Releases](https://github.com/ZeroWireRobotics/q8botone-python/releases))
+have the sim built in.
 
 How well the twin follows, in the sim - a second simulated robot as the
-"real" one, its MPU6050 mounted at odd angles with the user's chip's
+"real" one, its MPU6050 mounted at odd angles with a real chip's
 measured faults (11% scale error, a 31 deg/s gyro offset) and datasheet
 noise, readings arriving with radio-like jitter: mounting found within
 about 1 deg; standing tilt within 0.2 deg, holding a body tilt within 1 deg,
@@ -162,3 +168,9 @@ Siepert for Adafruit Industries, CC BY-SA,
 [github.com/adafruit/Adafruit-MPU6050-PCB](https://github.com/adafruit/Adafruit-MPU6050-PCB).
 Its outline, holes, chip and sockets are in `model/build.py` (`BOARD` and
 the rest), its outline mesh in `model/meshes/mpu6050_board.stl`.
+
+## License
+
+MIT - see [LICENSE](LICENSE). The MPU6050 board's outline
+(`model/meshes/mpu6050_board.stl`, and its layout in `model/build.py`) follows
+Adafruit's design and stays under its CC BY-SA licence, credited above.
