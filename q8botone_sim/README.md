@@ -1,4 +1,4 @@
-# q8botone-sim
+# The simulator
 
 A physics simulation of Q8botOne in [MuJoCo](https://mujoco.org): one robot
 model, used two ways -
@@ -30,25 +30,22 @@ training setup. Still to come: tuning its servos against the real robot.
 | `q8botone_sim/imu.py` | A simulated MPU6050, with a real chip's faults - and, under the same names, the q8bot library's calibration and orientation tracking (`q8bot.imu`) |
 | `q8botone_sim/qtview.py` | The model drawn into a Qt widget, for a window of its own - the desktop app's 3D view uses it |
 | `q8botone_sim/poser.py` | A window for posing and driving the robot |
-| `web/export.py` | Writes the model and gait tables the browser version on zerowirerobotics.com loads |
-| `pyproject.toml` | So other environments can install the sim (editable: `pip install -e`) |
+| `model/export_web.py` | Writes the model and gait tables the browser version on zerowirerobotics.com loads |
+
+Paths are from the top of this repository.
 
 ## Setting up
 
-The sim runs the [q8bot library](https://github.com/ZeroWireRobotics/q8botone-python),
-so check out q8botone-python next to this repository, then:
+The simulator comes with this repository, as an extra: set it up as the
+top-level README says, with `[gui,sim]` in place of `[gui]`:
 
 ```
-python -m venv venv
-venv\Scripts\pip install mujoco numpy pyyaml fast-simplification pillow
-$env:Q8BOT_SKIP_FIRMWARE_CHECK = 1
-venv\Scripts\pip install -e "..\q8botone-python[gui]"
+pip install -e ".[gui,sim]"
 ```
 
-`-e` keeps the sim on the library's working copy, so a change there shows in
-the sim at once, and `[gui]` brings the desktop app's own widgets (with Qt),
-whose pads the poser uses. The variable skips the library's check that its
-bundled firmware is the latest release - the sim doesn't use that firmware.
+`[sim]` brings MuJoCo. It runs the q8bot library - the same code that drives
+the real robot - and the desktop app's own widgets, whose pads the poser
+uses. Rebuilding the model from the CAD needs `[sim-build]` too.
 
 ## Posing and driving it
 
@@ -89,13 +86,8 @@ options (contact points, inertia boxes and more).
 
 ## In the desktop app
 
-Install the sim into the desktop app's environment, from q8botone-python:
-
-```
-venv\Scripts\pip install -e ..\q8botone-sim
-```
-
-The app's 3D view then shows this model, live. What moves it depends on
+With the simulator installed (`[sim]`), the app's 3D view shows this model,
+live. What moves it depends on
 what's connected:
 
 - **a robot** - what the robot measures: its eight joint angles from
@@ -125,9 +117,9 @@ The simulated robot answers the app as the robot does - its joint
 angles, a battery that reads full, no Qwiic sensors. Servo current and
 temperature aren't modelled, so they read n/a.
 
-Without the sim installed, the app shows its STL as before. The app's
-released builds ([q8botone-python's Releases](https://github.com/ZeroWireRobotics/q8botone-python/releases))
-have the sim built in.
+Without the simulator installed, the app shows its STL instead. The app's
+released builds ([Releases](https://github.com/ZeroWireRobotics/q8botone-python/releases))
+have it built in.
 
 How well the twin follows, in the sim - a second simulated robot as the
 "real" one, its MPU6050 mounted at odd angles with a real chip's
@@ -171,6 +163,6 @@ the rest), its outline mesh in `model/meshes/mpu6050_board.stl`.
 
 ## License
 
-MIT - see [LICENSE](LICENSE). The MPU6050 board's outline
+MIT, as the rest of this repository ([LICENSE](../LICENSE)). The MPU6050 board's outline
 (`model/meshes/mpu6050_board.stl`, and its layout in `model/build.py`) follows
 Adafruit's design and stays under its CC BY-SA licence, credited above.

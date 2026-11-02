@@ -21,8 +21,8 @@ robot's own gaits. Writes what the page loads:
 The page's own code (drive.js) and the libraries it loads (vendor/: MuJoCo's
 WebAssembly build, three.js) live in the site's repository.
 
-    python web/export.py                     -> ../zerowirerobotics-site/sim/
-    python web/export.py OUT_DIR
+    python model/export_web.py               -> ../zerowirerobotics-site/sim/
+    python model/export_web.py OUT_DIR
 
 Run it again after the model or the gaits change.
 '''
