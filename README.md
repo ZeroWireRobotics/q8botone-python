@@ -12,9 +12,34 @@ Python library and desktop app for **Q8botOne**, a quadruped robot with no physi
 - `q8bot/ui/` - the desktop app, built on the library
 - `example.py` - a guided tour of the library on your robot
 
-## Installing
+## Download the app
 
-So far this has been tested on Windows.
+The desktop app, ready to run - no Python needed - is on the
+[**Releases**](https://github.com/ZeroWireRobotics/q8botone-python/releases)
+page: one download for Windows, macOS (Apple Silicon) and Linux, each with
+the robot's simulator built in, so you can drive a simulated Q8botOne before
+yours arrives.
+
+- **Windows** - `Q8botOne-...-windows-x64.exe`. Windows may warn that it
+  doesn't know the app: click **More info**, then **Run anyway**.
+- **macOS** - `Q8botOne-...-macos-arm64.zip`: unzip it and move
+  **Q8botOne.app** to Applications. The app isn't signed by Apple yet, so
+  the first time, right-click it and choose **Open** (if macOS says it's
+  damaged, run `xattr -dr com.apple.quarantine /Applications/Q8botOne.app`
+  in Terminal, then open it).
+- **Linux** - `Q8botOne-...-linux-x64.tar.gz`: unpack it and run
+  `./Q8botOne`. To reach the controller over USB, your user needs to be in
+  the `dialout` group (`sudo usermod -aG dialout $USER`, then log in again).
+  On Ubuntu, Qt may also need `sudo apt install libxcb-cursor0`.
+
+Saved routines and the IMU's calibration are kept in your user folder
+(`%APPDATA%\Q8botOne`, `~/Library/Application Support/Q8botOne` or
+`~/.local/share/Q8botOne`), so they survive updates.
+
+## Installing from source
+
+For the Python library, or to run and change the app's code. Tested on
+Windows; the release builds are also made and checked on macOS and Linux.
 
 1. **Install Python 3.13** from [python.org](https://www.python.org/downloads/) - later Python releases may not be 100% compatible.
 
@@ -97,8 +122,9 @@ buttons: **Calibrate IMU** (the robot tilts itself four ways, about 15 s, to
 find how the sensor is mounted - once) and **Keep Level**, which holds the
 body level while the robot stands, whatever the ground under it does.
 
-With the simulator (q8botone-sim, checked out beside this repository)
-installed in the same environment - `pip install -e ../q8botone-sim` - the 3D
+With the simulator, [q8botone-sim](https://github.com/ZeroWireRobotics/q8botone-sim),
+cloned next to this repository and installed in the same environment
+(`pip install -e ../q8botone-sim`) - the released app has it built in - the 3D
 view shows the robot's simulated model, live. Connected to a robot, the model
 takes the robot's measured joint angles, on a test stand - and with the
 MPU6050 calibrated, comes off the stand: tilted, turned and walked along as
@@ -108,6 +134,25 @@ Pick **Simulated robot** in the Connection panel's list and click
 the real one, with everything but the servos' current and temperature
 readings. **Reset** puts the model back in the middle. Without the
 simulator, the view is a model to turn and look at.
+
+## Building the app
+
+The release builds come from `packaging/build.py` (GitHub builds all three
+whenever a version is tagged - `.github/workflows/release.yml`). To build
+one yourself, on the system you're building for, in the environment from
+Installing from source:
+
+```
+pip install pyinstaller pillow
+pip install -e ../q8botone-sim
+python packaging/build.py
+python packaging/build.py --test
+```
+
+The download lands in `dist/`; `--test` runs its self-test (bundled
+firmware, the simulator, the app started headless, the simulated robot
+connected and walked). Leave out the simulator and the app is built
+without it.
 
 ## Python API
 

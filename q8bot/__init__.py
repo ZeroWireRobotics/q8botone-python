@@ -21,7 +21,7 @@ directly if you want them. Likewise kinematics_solver.fk_solve() is the one
 thing that needs scipy, and imports it on demand.
 '''
 
-__version__ = '0.1.0'
+__version__ = '0.2.0'
 
 from .espnow import q8_espnow
 from .gait_manager import GAITS, GaitInfo, GaitManager, gait_info
