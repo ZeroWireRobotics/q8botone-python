@@ -124,12 +124,17 @@ def selftest():
     result = subprocess.run(command, capture_output=True, text=True, timeout=300)
     output = result.stdout + result.stderr
     print(output)
-    if result.returncode and os.environ.get('GITHUB_ACTIONS'):
+    if os.environ.get('GITHUB_ACTIONS'):
         # On GitHub, a job's log needs signing in to read - an annotation shows
-        # on the run's page (and in its API) to anyone
-        lines = [line for line in output.splitlines() if line.strip()][-40:]
-        text = '\n'.join([f'exit code {result.returncode}'] + lines)
-        print('::error title=Self-test failed::' + text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A'))
+        # on the run's page (and in its API) to anyone: the checks if they
+        # passed, the end of the output if not
+        lines = [line for line in output.splitlines() if line.strip()]
+        if result.returncode:
+            kind, title, lines = 'error', 'Self-test failed', [f'exit code {result.returncode}'] + lines[-40:]
+        else:
+            kind, title, lines = 'notice', 'Self-test passed', [line for line in lines if line[:4] in ('PASS', 'SKIP')]
+        text = '\n'.join(lines)
+        print(f'::{kind} title={title}::' + text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A'))
     return result.returncode
 
 
