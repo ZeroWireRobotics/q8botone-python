@@ -21,3 +21,15 @@ esptool>=5
 # [fk] extra
 # Only k_solver.fk_solve() needs this, and it imports it on demand.
 # scipy>=1.11.4
+
+# [sim] extra
+# The simulator (q8botone_sim): Q8botOne's model in MuJoCo - the desktop
+# app's live 3D view and "Simulated robot", and the poser.
+# mujoco>=3.2
+# numpy>=1.26
+
+# [sim-build] extra
+# Rebuilding the model from the CAD (model/build.py, model/render.py).
+# pyyaml
+# fast-simplification
+# pillow

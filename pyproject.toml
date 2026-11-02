@@ -29,6 +29,11 @@ gui = ["PySide6>=6.6", "pygame>=2.5.2", "pyqtgraph>=0.13", "PyOpenGL>=3.1", "num
        "esptool>=5"]
 # Only k_solver.fk_solve() needs this, and it imports it on demand.
 fk = ["scipy>=1.11.4"]
+# The simulator (q8botone_sim): Q8botOne's model in MuJoCo - the desktop
+# app's live 3D view and "Simulated robot", and the poser.
+sim = ["mujoco>=3.2", "numpy>=1.26"]
+# Rebuilding the model from the CAD (model/build.py, model/render.py).
+sim-build = ["pyyaml", "fast-simplification", "pillow"]
 
 [project.urls]
 Homepage = "https://zerowirerobotics.com"
@@ -42,7 +47,10 @@ q8bot-gui = "q8bot.ui:main"
 # assets/ and firmware/ hold only data, but setuptools treats every
 # directory in a package as a package - listing them is what keeps their
 # files shipping (its warning says future versions would drop them otherwise).
-packages = ["q8bot", "q8bot.ui", "q8bot.assets", "q8bot.firmware"]
+packages = ["q8bot", "q8bot.ui", "q8bot.assets", "q8bot.firmware",
+            # The simulator ([sim]). Its model lives in model/, beside it - so it
+            # needs this repository installed editable (-e), as the README has
+            "q8botone_sim"]
 
 [tool.setuptools.dynamic]
 version = { attr = "q8bot.__version__" }
