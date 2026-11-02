@@ -122,7 +122,14 @@ def selftest():
     if sys.platform.startswith('linux') and not os.environ.get('DISPLAY') and shutil.which('xvfb-run'):
         command = ['xvfb-run', '-a'] + command          # MuJoCo's view wants a display, even an invisible one
     result = subprocess.run(command, capture_output=True, text=True, timeout=300)
-    print(result.stdout + result.stderr)
+    output = result.stdout + result.stderr
+    print(output)
+    if result.returncode and os.environ.get('GITHUB_ACTIONS'):
+        # On GitHub, a job's log needs signing in to read - an annotation shows
+        # on the run's page (and in its API) to anyone
+        lines = [line for line in output.splitlines() if line.strip()][-40:]
+        text = '\n'.join([f'exit code {result.returncode}'] + lines)
+        print('::error title=Self-test failed::' + text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A'))
     return result.returncode
 
 
