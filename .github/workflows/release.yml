@@ -1,7 +1,7 @@
 # The desktop app for Windows, macOS and Linux - each built with the
 # simulator in it (q8botone-sim) and self-tested - and the Windows Firmware
 # Flasher. A version tag (v0.2.0) publishes them as a GitHub Release, with
-# packaging/release-notes/<tag>.md as its text; a push to the release-check
+# appbuild/release-notes/<tag>.md as its text; a push to the release-check
 # branch builds and tests them without releasing anything.
 
 name: Release builds
@@ -60,16 +60,16 @@ jobs:
 
       - name: Build the app
         working-directory: q8botone-python
-        run: python packaging/build.py
+        run: python appbuild/build.py
 
       - name: Self-test the build
         working-directory: q8botone-python
-        run: python packaging/build.py --test
+        run: python appbuild/build.py --test
 
       - name: Build the Firmware Flasher
         if: runner.os == 'Windows'
         working-directory: q8botone-python
-        run: python packaging/build.py --flasher
+        run: python appbuild/build.py --flasher
 
       - uses: actions/upload-artifact@v4
         with:
@@ -93,5 +93,5 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           name: Q8botOne ${{ github.ref_name }}
-          body_path: packaging/release-notes/${{ github.ref_name }}.md
+          body_path: appbuild/release-notes/${{ github.ref_name }}.md
           files: dist/*

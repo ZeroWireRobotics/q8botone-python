@@ -137,7 +137,7 @@ simulator, the view is a model to turn and look at.
 
 ## Building the app
 
-The release builds come from `packaging/build.py` (GitHub builds all three
+The release builds come from `appbuild/build.py` (GitHub builds all three
 whenever a version is tagged - `.github/workflows/release.yml`). To build
 one yourself, on the system you're building for, in the environment from
 Installing from source:
@@ -145,8 +145,8 @@ Installing from source:
 ```
 pip install pyinstaller pillow
 pip install -e ../q8botone-sim
-python packaging/build.py
-python packaging/build.py --test
+python appbuild/build.py
+python appbuild/build.py --test
 ```
 
 The download lands in `dist/`; `--test` runs its self-test (bundled

@@ -13,14 +13,14 @@ q8botone-sim (it looks for a checkout next to this one; SIM=path elsewhere):
 
     pip install ".[gui]" pyinstaller pillow
     pip install -e ../q8botone-sim
-    python packaging/build.py
-    python packaging/build.py --test      # then run the build's self-test
+    python appbuild/build.py
+    python appbuild/build.py --test      # then run the build's self-test
 
 Without q8botone-sim it builds the app without them (it then shows the
 robot as a still model). GitHub builds all three on every version tag (see
 .github/workflows/release.yml).
 
-    python packaging/build.py --flasher
+    python appbuild/build.py --flasher
 
 builds the standalone Firmware Flasher instead: a folder with the flasher
 and the firmware bundled in q8bot/firmware/ beside it, zipped as
@@ -83,7 +83,7 @@ def pyinstaller_args(sim):
         args += ['--collect-submodules', 'q8botone_sim', '--collect-all', 'mujoco', '--collect-all', 'glfw',
                  '--add-data', f"{sim / 'model' / 'q8botone.xml'}{sep}q8botone-model",
                  '--add-data', f"{sim / 'model' / 'meshes'}{sep}q8botone-model/meshes"]
-    return args + [str(ROOT / 'packaging' / 'launcher.py')]
+    return args + [str(ROOT / 'appbuild' / 'launcher.py')]
 
 
 def package(ver):
@@ -148,7 +148,7 @@ def build_flasher():
                    'q8bot.ui.log_bridge', 'pygame', 'pyqtgraph', 'OpenGL', 'numpy', 'mujoco', 'q8botone_sim',
                    'tkinter', 'matplotlib', 'scipy', 'PIL'):
         args += ['--exclude-module', module]
-    PyInstaller.__main__.run(args + [str(ROOT / 'packaging' / 'flasher.py')])
+    PyInstaller.__main__.run(args + [str(ROOT / 'appbuild' / 'flasher.py')])
 
     identity = read_bin_identity(FIRMWARE_DIR / 'robot.bin')
     fw = identity.version if identity else 'unknown'
@@ -160,7 +160,7 @@ def build_flasher():
     shutil.copy2(exe, folder / exe.name)
     for name in FLASH_SET:
         shutil.copy2(FIRMWARE_DIR / name, folder / 'firmware' / name)
-    readme = (ROOT / 'packaging' / 'flasher-README.txt').read_text(encoding='utf-8').format(firmware_version=fw)
+    readme = (ROOT / 'appbuild' / 'flasher-README.txt').read_text(encoding='utf-8').format(firmware_version=fw)
     (folder / 'README.txt').write_bytes(readme.replace('\n', '\r\n').encode('utf-8'))      # for Notepad
     out = DIST / f'{FLASHER}-{fw}-{system}-{arch}.zip'
     with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
