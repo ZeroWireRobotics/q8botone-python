@@ -1,7 +1,7 @@
 '''
 Written by yufeng.wu0902@gmail.com
 
-The 3D viewer panel. With the simulator installed (q8botone-sim, which
+The 3D viewer panel. With the simulator installed (the [sim] extra, which
 brings MuJoCo) it shows the robot's simulated model, live. What moves it
 depends on what's connected:
 
@@ -126,15 +126,18 @@ SIMULATED_ROBOT = "Simulated robot"
 def _simulator():
     """
     The simulator's pieces - Q8Sim, Firmware, SimLink, ModelView and the imu
-    module, by name - or None if q8botone-sim isn't installed. It's
-    optional: a separate repository, and MuJoCo is a large download.
+    module, by name - or None without the [sim] extra, or without the model
+    beside the simulator (an install that isn't editable leaves model/
+    behind). It's optional: MuJoCo is a large download.
     """
     try:
         from q8botone_sim import imu
         from q8botone_sim.firmware import Firmware, SimLink
         from q8botone_sim.qtview import ModelView
-        from q8botone_sim.sim import Q8Sim
+        from q8botone_sim.sim import MODEL, Q8Sim
     except ImportError:
+        return None
+    if not MODEL.exists():
         return None
     return SimpleNamespace(Q8Sim=Q8Sim, Firmware=Firmware, SimLink=SimLink, ModelView=ModelView, imu=imu)
 

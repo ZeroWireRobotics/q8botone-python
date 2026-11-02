@@ -1,5 +1,5 @@
 # The desktop app for Windows, macOS and Linux - each built with the
-# simulator in it (q8botone-sim) and self-tested - and the Windows Firmware
+# simulator in it and self-tested - and the Windows Firmware
 # Flasher. A version tag (v0.2.0) publishes them as a GitHub Release, with
 # appbuild/release-notes/<tag>.md as its text; a push to the release-check
 # branch builds and tests them without releasing anything.
@@ -14,10 +14,6 @@ on:
 permissions:
   contents: write
 
-env:
-  # The simulator version the app is built with
-  SIM_REF: v0.1.0
-
 jobs:
   build:
     name: ${{ matrix.name }}
@@ -31,13 +27,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: q8botone-python
-      - uses: actions/checkout@v4
-        with:
-          repository: ZeroWireRobotics/q8botone-sim
-          ref: ${{ env.SIM_REF }}
-          path: q8botone-sim
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
@@ -51,33 +40,28 @@ jobs:
             libxcb-xinerama0 libxcb-xfixes0 libxcb-xkb1
 
       - name: Install, as the README says
-        working-directory: q8botone-python
         run: |
           python -m pip install --upgrade pip
-          pip install ".[gui]"
-          pip install -e ../q8botone-sim
+          pip install -e ".[gui,sim]"
           pip install pyinstaller pillow
 
       - name: Build the app
-        working-directory: q8botone-python
         run: python appbuild/build.py
 
       - name: Self-test the build
-        working-directory: q8botone-python
         run: python appbuild/build.py --test
 
       - name: Build the Firmware Flasher
         if: runner.os == 'Windows'
-        working-directory: q8botone-python
         run: python appbuild/build.py --flasher
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ runner.os }}
           path: |
-            q8botone-python/dist/Q8botOne-*.exe
-            q8botone-python/dist/Q8botOne-*.zip
-            q8botone-python/dist/Q8botOne-*.tar.gz
+            dist/Q8botOne-*.exe
+            dist/Q8botOne-*.zip
+            dist/Q8botOne-*.tar.gz
           if-no-files-found: error
 
   release:

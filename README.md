@@ -63,7 +63,7 @@ Windows; the release builds are also made and checked on macOS and Linux.
    ```
    py -3.13 -m venv venv
    venv\Scripts\activate
-   pip install -e ".[gui]"
+   pip install -e ".[gui,sim]"
    ```
 
    macOS / Linux:
@@ -71,14 +71,15 @@ Windows; the release builds are also made and checked on macOS and Linux.
    ```
    python3.13 -m venv venv
    source venv/bin/activate
-   pip install -e ".[gui]"
+   pip install -e ".[gui,sim]"
    ```
 
    The first line makes a virtual environment: a private Python setup for
    this project, so nothing clashes with your other Python programs. The
    second line switches to it - do that again each time you open a new
    terminal. The last line downloads what the app needs, which takes a few
-   minutes.
+   minutes: `gui` is the app, `sim` its simulator (the MuJoCo physics
+   engine - leave out `,sim` to go without it).
 
 Only want the Python library, without the app? `pip install -e .` installs
 just that, and works with any Python from 3.9.
@@ -122,18 +123,18 @@ buttons: **Calibrate IMU** (the robot tilts itself four ways, about 15 s, to
 find how the sensor is mounted - once) and **Keep Level**, which holds the
 body level while the robot stands, whatever the ground under it does.
 
-With the simulator, [q8botone-sim](https://github.com/ZeroWireRobotics/q8botone-sim),
-cloned next to this repository and installed in the same environment
-(`pip install -e ../q8botone-sim`) - the released app has it built in - the 3D
-view shows the robot's simulated model, live. Connected to a robot, the model
-takes the robot's measured joint angles, on a test stand - and with the
+With the simulator - the `sim` in the install above; the released app has
+it built in - the 3D view shows the robot's simulated model, live.
+Connected to a robot, the model takes the robot's measured joint angles, on
+a test stand - and with the
 MPU6050 calibrated, comes off the stand: tilted, turned and walked along as
 the robot is. No robot to hand?
 Pick **Simulated robot** in the Connection panel's list and click
 **Connect**: the model is then the robot, and the app drives it as it would
 the real one, with everything but the servos' current and temperature
 readings. **Reset** puts the model back in the middle. Without the
-simulator, the view is a model to turn and look at.
+simulator, the view is a model to turn and look at. The simulator and how
+its model is made: [q8botone_sim/README.md](q8botone_sim/README.md).
 
 ## Building the app
 
@@ -144,15 +145,14 @@ Installing from source:
 
 ```
 pip install pyinstaller pillow
-pip install -e ../q8botone-sim
 python appbuild/build.py
 python appbuild/build.py --test
 ```
 
 The download lands in `dist/`; `--test` runs its self-test (bundled
 firmware, the simulator, the app started headless, the simulated robot
-connected and walked). Leave out the simulator and the app is built
-without it.
+connected and walked). Installed without `sim`, the app is built without
+the simulator.
 
 ## Python API
 

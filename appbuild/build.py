@@ -7,18 +7,17 @@ Builds the desktop app as one download (PyInstaller), into dist/:
     macOS     Q8botOne-<version>-macos-arm64.zip       Q8botOne.app inside
     Linux     Q8botOne-<version>-linux-x64.tar.gz      one executable inside
 
-Run it from this repository, in an environment with the app installed and
-PyInstaller - and, so the app has its live 3D view and the simulated robot,
-q8botone-sim (it looks for a checkout next to this one; SIM=path elsewhere):
+Run it from this repository, in an environment with the app installed - with
+the simulator, so the app has its live 3D view and the simulated robot - and
+PyInstaller:
 
-    pip install ".[gui]" pyinstaller pillow
-    pip install -e ../q8botone-sim
+    pip install -e ".[gui,sim]" pyinstaller pillow
     python appbuild/build.py
     python appbuild/build.py --test      # then run the build's self-test
 
-Without q8botone-sim it builds the app without them (it then shows the
-robot as a still model). GitHub builds all three on every version tag (see
-.github/workflows/release.yml).
+Installed without [sim] (MuJoCo), it builds the app without the simulator
+(it then shows the robot as a still model). GitHub builds all three on every
+version tag (see .github/workflows/release.yml).
 
     python appbuild/build.py --flasher
 
@@ -46,14 +45,14 @@ def version():
     return __version__
 
 
-def sim_checkout():
-    '''q8botone-sim's checkout (it carries the model beside the package), or None.'''
+def with_simulator():
+    '''Whether the simulator goes in: it and its model are in this repository,
+    so it's whether MuJoCo is installed (the [sim] extra).'''
     try:
-        import q8botone_sim
+        import mujoco  # noqa: F401
     except ImportError:
-        return None
-    path = Path(os.environ.get('SIM', Path(q8botone_sim.__file__).resolve().parent.parent))
-    return path if (path / 'model' / 'q8botone.xml').exists() else None
+        return False
+    return (ROOT / 'model' / 'q8botone.xml').exists()
 
 
 def target():
@@ -74,18 +73,18 @@ def pyinstaller_args(sim):
         '--exclude-module', 'tkinter', '--exclude-module', 'matplotlib', '--exclude-module', 'scipy',
         '--exclude-module', 'PIL',
         '--distpath', str(DIST), '--workpath', str(ROOT / 'build' / 'pyinstaller'), '--specpath', str(ROOT / 'build'),
+        # The packages from this checkout: an editable install, as the README
+        # has, hides them behind an import hook PyInstaller can't see through
+        '--paths', str(ROOT),
     ]
     # A macOS app is a folder (Q8botOne.app); elsewhere, one self-contained file
     args += ['--osx-bundle-identifier', 'com.zerowirerobotics.q8botone'] if sys.platform == 'darwin' else ['--onefile']
-    if sim is not None:
+    if sim:
         # The simulator, MuJoCo with its native library and window/GL helper,
         # and the model - unpacked to q8botone-model/, where sim.py looks
-        # (--paths: an editable install, as the README has, hides the package
-        # behind an import hook PyInstaller can't see through)
-        args += ['--paths', str(sim),
-                 '--collect-submodules', 'q8botone_sim', '--collect-all', 'mujoco', '--collect-all', 'glfw',
-                 '--add-data', f"{sim / 'model' / 'q8botone.xml'}{sep}q8botone-model",
-                 '--add-data', f"{sim / 'model' / 'meshes'}{sep}q8botone-model/meshes"]
+        args += ['--collect-submodules', 'q8botone_sim', '--collect-all', 'mujoco', '--collect-all', 'glfw',
+                 '--add-data', f"{ROOT / 'model' / 'q8botone.xml'}{sep}q8botone-model",
+                 '--add-data', f"{ROOT / 'model' / 'meshes'}{sep}q8botone-model/meshes"]
     return args + [str(ROOT / 'appbuild' / 'launcher.py')]
 
 
@@ -143,7 +142,7 @@ def build_flasher():
     args = ['--noconfirm', '--clean', '--onefile', '--windowed', '--name', FLASHER, '--icon', str(icon),
             '--add-data', f'{icon}{sep}.', '--collect-all', 'esptool',
             '--hidden-import', 'q8bot.ui.firmware_dialog', '--hidden-import', 'q8bot.ui.panels',
-            '--hidden-import', 'q8bot.ui.widgets',
+            '--hidden-import', 'q8bot.ui.widgets', '--paths', str(ROOT),
             '--distpath', str(DIST / 'flasher-build'), '--workpath', str(ROOT / 'build' / 'flasher'),
             '--specpath', str(ROOT / 'build')]
     # The flasher never loads the rest of the app (see flasher.py) - leave it out
@@ -181,9 +180,9 @@ def main():
         return 0
     import PyInstaller.__main__
     ver = version()
-    sim = sim_checkout()
+    sim = with_simulator()
     print(f'Building {NAME} {ver} for {"-".join(target())}, '
-          f'{"with the simulator from " + str(sim) if sim else "WITHOUT the simulator (q8botone-sim not installed)"}')
+          f'{"with the simulator" if sim else "WITHOUT the simulator (installed without [sim])"}')
     PyInstaller.__main__.run(pyinstaller_args(sim))
     out = package(ver)
     print(f'{out} ({out.stat().st_size / 1e6:.0f} MB)')
