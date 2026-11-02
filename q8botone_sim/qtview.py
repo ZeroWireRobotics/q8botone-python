@@ -7,7 +7,9 @@ own rather than in MuJoCo's viewer:
     sim.step(...)
     view.refresh()                  # draw the sim as it is now
 
-Drag to turn the view, scroll to zoom.
+Drag to turn the view, scroll to zoom. Where MuJoCo's renderer can't run
+(no usable OpenGL - a virtual machine, a remote desktop, a build server), the
+first refresh() raises why, and the view shows a note instead from then on.
 '''
 
 import mujoco
@@ -38,20 +40,26 @@ class ModelView(QWidget):
         self._pixels = None                 # kept alive while the image below points into it
         self._image = None
         self._drag = None
+        self.unavailable = None             # why it can't draw here, once the renderer has failed to start
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMinimumSize(160, 120)
         self.setCursor(Qt.OpenHandCursor)
 
     def refresh(self):
         '''Draw the sim as it is now.'''
-        if not self.isVisible():
+        if self.unavailable is not None or not self.isVisible():
             return
         ratio = self.devicePixelRatioF()
         w = max(1, min(round(self.width() * ratio), MAX_PIXELS[0]))
         h = max(1, min(round(self.height() * ratio), MAX_PIXELS[1]))
         if (w, h) != self._size:            # a renderer draws one size: a new one for a new size
             self.close_renderer()
-            self._renderer = mujoco.Renderer(self.sim.model, h, w)
+            try:
+                self._renderer = mujoco.Renderer(self.sim.model, h, w)
+            except Exception as exc:
+                self.unavailable = f'{type(exc).__name__}: {exc}'
+                self.update()
+                raise
             self._size = (w, h)
         self._renderer.update_scene(self.sim.data, self.camera)
         self._pixels = np.ascontiguousarray(self._renderer.render())
@@ -64,7 +72,11 @@ class ModelView(QWidget):
             self._renderer, self._size = None, None
 
     def paintEvent(self, _event):
-        if self._image is not None:
+        if self.unavailable is not None:
+            QPainter(self).drawText(self.rect().adjusted(12, 12, -12, -12), Qt.AlignCenter | Qt.TextWordWrap,
+                                    "No 3D view on this computer: MuJoCo draws with OpenGL, which its graphics "
+                                    f"don't offer ({self.unavailable}). The simulation still runs.")
+        elif self._image is not None:
             QPainter(self).drawImage(self.rect(), self._image)
 
     def mousePressEvent(self, event):

@@ -52,7 +52,7 @@ def selftest():
     started headless, the simulated robot connected through the Connection
     panel's own path and walked. Prints a line per check; exits 1 if any
     failed. The 3D view needs OpenGL - where there's none (a build server
-    without a GPU), its check is reported and skipped rather than failed.
+    without a GPU), its drawing is reported and skipped rather than failed.
     """
     os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
     results = []
@@ -111,7 +111,7 @@ def selftest():
 
     pump(0.5)
     live = win.viewer.live
-    no_gl = [e for e in errors.seen if 'simulated model' in e]
+    no_gl = [e for e in errors.seen if 'simulated model' in e or e.startswith(viewer.NO_DRAWING)]
     if live is None and no_gl:
         print(f"SKIP  3D view: no OpenGL here - {no_gl[0]}", flush=True)
     else:
@@ -126,9 +126,12 @@ def selftest():
         win.manual.move_pad.centre()
         walked = live.sim.chassis()[0] - x0
         check('simulated robot: walks', walked > 100, f'{walked:.0f} mm in 2 s')
-        picture = live.view.grab().toImage()
-        check('3D view: draws the robot', picture.width() > 0 and len({picture.pixel(x, picture.height() // 2)
-              for x in range(0, picture.width(), 7)}) > 3, f'{picture.width()}x{picture.height()}')
+        if live.view.unavailable is not None:
+            print(f"SKIP  3D view: no OpenGL here - {live.view.unavailable}", flush=True)
+        else:
+            picture = live.view.grab().toImage()
+            check('3D view: draws the robot', picture.width() > 0 and len({picture.pixel(x, picture.height() // 2)
+                  for x in range(0, picture.width(), 7)}) > 3, f'{picture.width()}x{picture.height()}')
         win._disconnect_robot()
     win.close()
     other = [e for e in errors.seen if e not in no_gl]

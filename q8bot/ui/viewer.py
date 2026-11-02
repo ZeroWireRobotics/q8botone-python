@@ -122,6 +122,10 @@ IMU_STALE_S = 1.0                   # an IMU silent this long is gone: back onto
 # The Connection panel's name for the simulated robot - never a serial port's
 SIMULATED_ROBOT = "Simulated robot"
 
+# Logged once where MuJoCo's renderer can't run (no usable OpenGL): the model
+# runs on, unseen, and the view says why
+NO_DRAWING = "The 3D view can't draw on this computer (MuJoCo needs OpenGL)"
+
 
 def _simulator():
     """
@@ -317,7 +321,10 @@ class LiveModel(QWidget):
                 text += " - connect a robot, or the simulated one, to drive it"
         self.status.setText(text)
         self.status.setToolTip(text)            # (in case it's cut short)
-        self.view.refresh()
+        try:
+            self.view.refresh()
+        except Exception as exc:                # once: the view stops trying, and shows why
+            Q8Logger.error(f"{NO_DRAWING}: {exc}")
 
     def _follow_robot(self):
         """
