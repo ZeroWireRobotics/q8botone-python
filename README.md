@@ -10,6 +10,9 @@ Python library and desktop app for **Q8botOne**, a quadruped robot with no physi
 
 - `q8bot/` - the Python library, for driving the robot from your own scripts
 - `q8bot/ui/` - the desktop app, built on the library
+- `q8botone_sim/` and `model/` - the simulator: Q8botOne's physics model in
+  [MuJoCo](https://mujoco.org), behind the app's 3D view and Simulated robot
+- `appbuild/` - how the downloadable app is built
 - `example.py` - a guided tour of the library on your robot
 
 ## Download the app
