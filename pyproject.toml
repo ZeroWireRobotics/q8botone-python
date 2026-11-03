@@ -34,6 +34,8 @@ fk = ["scipy>=1.11.4"]
 sim = ["mujoco>=3.2", "numpy>=1.26"]
 # Rebuilding the model from the CAD (model/build.py, model/render.py).
 sim-build = ["pyyaml", "fast-simplification", "pillow"]
+# The plots in tools/power_run.py's battery runtime report.
+tools = ["matplotlib>=3.8", "numpy>=1.26"]
 
 [project.urls]
 Homepage = "https://zerowirerobotics.com"

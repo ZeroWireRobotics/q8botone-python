@@ -33,3 +33,8 @@ esptool>=5
 # pyyaml
 # fast-simplification
 # pillow
+
+# [tools] extra
+# The plots in tools/power_run.py's battery runtime report.
+# matplotlib>=3.8
+# numpy>=1.26
