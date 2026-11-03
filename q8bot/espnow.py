@@ -156,15 +156,30 @@ class q8_espnow:
     def stop_gait(self):
         return self._send(CmdType.GAIT_STOP)
 
-    def set_led_brightness(self, brightness):
+    def set_led_brightness(self, brightness, save=True):
         """
         Set (and have the robot persist to NVS) its RGB LED brightness.
 
         Args:
             brightness: int, 0-255, clamped
+            save: False = just for now - a restart brings back the saved
+                brightness (protocol 4 firmware; older firmware saves it anyway)
         """
         brightness = max(0, min(255, int(brightness)))
-        return self._send(CmdType.LED_BRIGHTNESS, bytes([brightness]))
+        flags = b'' if save else bytes([0x01])
+        return self._send(CmdType.LED_BRIGHTNESS, bytes([brightness]) + flags)
+
+    def set_power_rail(self, rail, on):
+        """
+        Switch one of the robot's buck converters - for power measurements.
+
+        Args:
+            rail: 5 (the peripherals, e.g. the RGB LED) or 6 (the servos)
+            on: bool
+        """
+        if rail not in (5, 6):
+            raise ValueError(f'rail must be 5 or 6, not {rail!r}')
+        return self._send(CmdType.POWER_RAIL, bytes([rail, 1 if on else 0]))
 
     def move_all(self, joints_pos, dur = 0):
         # Expects 8 positions in deg. For example: [0, 90, 0, 90, 0, 90, 0, 90]

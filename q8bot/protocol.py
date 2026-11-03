@@ -19,7 +19,9 @@ from enum import IntEnum
 # any change the other side has to know about: a new or changed command or
 # reply, a payload layout, gait/direction IDs. Must equal protocol.h's
 # PROTOCOL_VERSION. Not yet exchanged or checked on connect.
-PROTOCOL_VERSION = 3  # 2: SENSOR_REQUEST / SENSOR_REPLY; 3: GAIT_RUN must be repeated
+PROTOCOL_VERSION = 4  # 2: SENSOR_REQUEST / SENSOR_REPLY; 3: GAIT_RUN must be repeated;
+                      # 4: TELEMETRY_REPLY adds servo voltage + hardware errors (72 bytes),
+                      #    POWER_RAIL, LED_BRIGHTNESS's don't-save flag
 
 START_BYTE = 0xAA
 _HEADER_LEN = 2       # msg_type, length
@@ -41,9 +43,12 @@ class CmdType(IntEnum):
     HOST_CONNECTED = 0x09  # no payload - controller-local only, never forwarded to the robot;
                             # tells the controller firmware to switch from independent (gamepad) mode
                             # to relay mode
-    LED_BRIGHTNESS = 0x0A  # {brightness: uint8, 0-255} - sets & persists the robot's RGB LED brightness
+    LED_BRIGHTNESS = 0x0A  # {brightness: uint8, 0-255[, flags: uint8]} - sets & persists the robot's
+                           # RGB LED brightness; flags bit 0 = this once, don't persist it
     TELEMETRY_REQUEST = 0x0B  # no payload - ask for one joint snapshot, answered with TELEMETRY_REPLY
     SENSOR_REQUEST = 0x0C     # no payload - sample the robot's Qwiic sensors, answered with SENSOR_REPLY
+    POWER_RAIL = 0x0D         # {rail: uint8 5|6, on: uint8} - switch a buck converter, for power
+                              # measurements; 6V off cuts the servos' power, torque off until a restart
 
 
 class ReplyType(IntEnum):
@@ -83,15 +88,29 @@ DIRECTION_TO_ID = {name: i for i, name in enumerate(DIRECTION_ORDER)}
 GAIT_NAME_TO_ID = {name: gait_id for gait_id, name in GAIT_IDS.items()}
 
 
-# TELEMETRY_REPLY payload: all 8 joints, 56 bytes. Must match the
+# TELEMETRY_REPLY payload: all 8 joints, 72 bytes. Must match the
 # TelemetryPayload struct in q8botone-firmware/robot/include/protocol.h.
 #
-# Position and current are read fresh on every request; temperature is
-# whatever the robot last sampled (it refreshes on its own ~1s timer), since
-# it sits outside the contiguous register block the main read covers and
-# moves over seconds rather than milliseconds.
-TELEMETRY_STRUCT = struct.Struct('<8i8h8b')
-TELEMETRY_SIZE = TELEMETRY_STRUCT.size   # 56
+# Position and current are read fresh on every request; temperature, supply
+# voltage and hardware error status are whatever the robot last sampled (it
+# refreshes them on its own ~1s timer), since they sit outside the
+# contiguous register block the main read covers and move over seconds
+# rather than milliseconds. Protocol 3 firmware sends only the first 56 bytes.
+TELEMETRY_STRUCT = struct.Struct('<8i8h8b8B8B')
+TELEMETRY_SIZE = TELEMETRY_STRUCT.size   # 72
+_TELEMETRY_V3 = struct.Struct('<8i8h8b')  # 56
+
+# Hardware Error Status (register 70) bits on the XL330 - what a nonzero
+# 'hw_error' means. A servo with any of them set has switched its own torque
+# off, and keeps it off until it restarts.
+SERVO_ERROR_BITS = {0: 'input voltage', 2: 'overheating', 4: 'electrical shock', 5: 'overload'}
+
+
+def describe_servo_error(bits):
+    """'input voltage, overload' for a Hardware Error Status value, '' for 0."""
+    names = [name for bit, name in SERVO_ERROR_BITS.items() if bits & (1 << bit)]
+    names += [f'bit {b}' for b in range(8) if bits & (1 << b) and b not in SERVO_ERROR_BITS]
+    return ', '.join(names)
 
 
 def parse_battery(payload: bytes):
@@ -117,16 +136,27 @@ def parse_telemetry(payload: bytes):
 
     Returns:
         dict with 'position' (raw ticks), 'current' (mA, signed - reads near
-        zero with torque off, since none is flowing) and 'temperature'
-        (degrees C), each a tuple of 8. None if the payload is the wrong size.
+        zero with torque off, since none is flowing), 'temperature' (degrees
+        C), 'voltage' (each servo's supply, V) and 'hw_error' (Hardware Error
+        Status - see describe_servo_error), each a tuple of 8. From protocol
+        3 firmware, 'voltage' and 'hw_error' are None. None if the payload is
+        the wrong size.
     """
-    if len(payload) != TELEMETRY_SIZE:
+    if len(payload) == TELEMETRY_SIZE:
+        values = TELEMETRY_STRUCT.unpack(payload)
+        voltage = tuple(v / 10 for v in values[24:32])
+        hw_error = values[32:40]
+    elif len(payload) == _TELEMETRY_V3.size:
+        values = _TELEMETRY_V3.unpack(payload)
+        voltage = hw_error = None
+    else:
         return None
-    values = TELEMETRY_STRUCT.unpack(payload)
     return {
         'position': values[0:8],
         'current': values[8:16],
         'temperature': values[16:24],
+        'voltage': voltage,
+        'hw_error': hw_error,
     }
 
 

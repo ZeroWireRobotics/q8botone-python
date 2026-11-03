@@ -784,9 +784,22 @@ class Q8Bot:
             self._guard(self.link.enable_torque)
 
     @_needs_link
-    def set_led_brightness(self, brightness):
-        """0-255, persisted on the robot."""
-        return self._guard(self.link.set_led_brightness, brightness)
+    def set_led_brightness(self, brightness, save=True):
+        """0-255, persisted on the robot - unless save=False: just until it restarts."""
+        return self._guard(self.link.set_led_brightness, brightness, save)
+
+    @_needs_link
+    def set_power_rail(self, rail, on):
+        """
+        Switch one of the robot's buck converters: 5 = the 5 V peripherals
+        (the RGB light), 6 = the 6 V servo supply. For power measurements
+        (tools/power_idle.py) - the robot keeps running on its own supply.
+
+        Cutting the 6 V buck turns the motors off and keeps them off until
+        the robot is restarted: a servo that lost power comes back with its
+        settings reset. Needs protocol 4 firmware; older firmware ignores it.
+        """
+        return self._guard(self.link.set_power_rail, rail, on)
 
     @_needs_link
     def request_battery(self):
@@ -884,8 +897,11 @@ class Q8Bot:
         """
         The most recent joint snapshot, or None if none has arrived.
 
-        A dict of 'position' (raw ticks), 'current' (mA, signed) and
-        'temperature' (degrees C), each 8 long. Latest-value rather than
+        A dict of 'position' (raw ticks), 'current' (mA, signed),
+        'temperature' (degrees C), 'voltage' (each servo's supply, V) and
+        'hw_error' (Hardware Error Status, 0 = fine - see
+        protocol.describe_servo_error), each 8 long; 'voltage' and 'hw_error'
+        are None from firmware before protocol 4. Latest-value rather than
         take-once like the battery, because this is a continuous stream a UI
         wants to render whenever it repaints.
 
