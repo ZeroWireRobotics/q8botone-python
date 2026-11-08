@@ -12,6 +12,7 @@ import math
 
 from PySide6.QtCore import (
     Property,
+    QEvent,
     QEasingCurve,
     QPropertyAnimation,
     QPointF,
@@ -21,7 +22,32 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import QColor, QPainter, QPalette
-from PySide6.QtWidgets import QAbstractButton, QLabel, QSizePolicy, QWidget
+from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QLineEdit, QSizePolicy, QWidget
+
+
+# Text size (View > Text Size). The window scales the app's font from the
+# size Qt picked at startup; drawn widgets scale their geometry by the same
+# factor, read off their own font, so a pad or a gauge keeps its proportion
+# to the text around it. Each calls its _rescale() when built and again
+# whenever its font changes.
+_base_point_size = None
+
+
+def set_base_point_size(points):
+    """The app font's size at 100% - before any View > Text Size scaling."""
+    global _base_point_size
+    _base_point_size = points
+
+
+def text_scale(widget):
+    """How far `widget`'s font is from 100%: 1.0 at the default text size."""
+    base = _base_point_size or QApplication.font().pointSizeF()
+    size = widget.font().pointSizeF()
+    return size / base if base > 0 and size > 0 else 1.0
+
+
+def is_font_change(event):
+    return event.type() == QEvent.FontChange
 
 
 def _blend(start, end, amount):
@@ -41,9 +67,11 @@ class ToggleSwitch(QAbstractButton):
 
     TRACK_HEIGHT_RATIO = 0.72
     KNOB_MARGIN = 3
+    WIDTH, HEIGHT = 52, 26
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._rescale()
         self.setCheckable(True)
         self.setCursor(Qt.PointingHandCursor)
         self.setFocusPolicy(Qt.TabFocus)
@@ -56,7 +84,18 @@ class ToggleSwitch(QAbstractButton):
         self.toggled.connect(self._animate_to)
 
     def sizeHint(self):
-        return QSize(52, 26)
+        return QSize(self._width, self._height)
+
+    def _rescale(self):
+        s = text_scale(self)
+        self._width, self._height = round(self.WIDTH * s), round(self.HEIGHT * s)
+        self.KNOB_MARGIN = max(2, round(type(self).KNOB_MARGIN * s))
+        self.updateGeometry()
+
+    def changeEvent(self, event):
+        if is_font_change(event):
+            self._rescale()
+        super().changeEvent(event)
 
     def _get_position(self):
         return self._position
@@ -145,7 +184,7 @@ class StatusDot(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(self.DIAMETER + 4, self.DIAMETER + 4)
+        self._rescale()
         self._state = self.OFF
         self._glow = 1.0
 
@@ -155,6 +194,16 @@ class StatusDot(QWidget):
         self._pulse.setKeyValueAt(0.5, 0.35)
         self._pulse.setEndValue(1.0)
         self._pulse.setLoopCount(-1)
+
+    def _rescale(self):
+        self.DIAMETER = round(type(self).DIAMETER * text_scale(self))
+        self.setFixedSize(self.DIAMETER + 4, self.DIAMETER + 4)
+        self.update()
+
+    def changeEvent(self, event):
+        if is_font_change(event):
+            self._rescale()
+        super().changeEvent(event)
 
     def _get_glow(self):
         return self._glow
@@ -220,7 +269,7 @@ class JoystickPad(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(self.SIZE, self.SIZE)
+        self._rescale()
         self.setCursor(Qt.PointingHandCursor)
         self._x = 0.0
         self._y = 0.0
@@ -236,6 +285,17 @@ class JoystickPad(QWidget):
         self._animation = QPropertyAnimation(self, b"returnFraction", self)
         self._animation.setDuration(self.RETURN_MS)
         self._animation.setEasingCurve(QEasingCurve.OutCubic)
+
+    def _rescale(self):
+        s, cls = text_scale(self), type(self)
+        self.SIZE, self.KNOB_R = round(cls.SIZE * s), round(cls.KNOB_R * s)
+        self.setFixedSize(self.SIZE, self.SIZE)
+        self.update()
+
+    def changeEvent(self, event):
+        if is_font_change(event):
+            self._rescale()
+        super().changeEvent(event)
 
     def _get_return(self):
         return self._return
@@ -403,8 +463,21 @@ class BatteryGauge(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(self.BODY_W + self.CAP_W + 2, self.BODY_H + 2)
+        self._rescale()
         self._percent = None
+
+    def _rescale(self):
+        s, cls = text_scale(self), type(self)
+        self.BODY_W, self.BODY_H = round(cls.BODY_W * s), round(cls.BODY_H * s)
+        self.CAP_W, self.CAP_H = max(2, round(cls.CAP_W * s)), round(cls.CAP_H * s)
+        self.INSET = cls.INSET * s
+        self.setFixedSize(self.BODY_W + self.CAP_W + 2, self.BODY_H + 2)
+        self.update()
+
+    def changeEvent(self, event):
+        if is_font_change(event):
+            self._rescale()
+        super().changeEvent(event)
 
     def set_percent(self, percent):
         self._percent = None if percent is None else max(0, min(100, int(percent)))
@@ -458,6 +531,65 @@ class ClickableLabel(QLabel):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self.isEnabled() and self.rect().contains(event.position().toPoint()):
             self._on_click()
+        super().mouseReleaseEvent(event)
+
+
+class ActionField(QLineEdit):
+    """
+    A read-only readout that becomes a button while there's something to
+    do: hovered, it shows `action` (white on `color`), and a click emits
+    clicked. Robot Information's Error field - a Clear button of its own
+    would need a column that stands empty almost all the time.
+    """
+
+    clicked = Signal()
+
+    def __init__(self, action, color, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setAlignment(Qt.AlignCenter)
+        self._action, self._color = action, color
+        self._text, self._alert, self._actionable, self._hovered = "", False, False, False
+
+    @property
+    def actionable(self):
+        return self._actionable
+
+    def show_state(self, text, alert=False, actionable=False):
+        """text: what it reads; alert: in `color`, bold; actionable: hover
+        offers the action, a click emits clicked."""
+        self._text, self._alert, self._actionable = text, alert, actionable
+        self.setCursor(Qt.PointingHandCursor if actionable else Qt.ArrowCursor)
+        self._refresh()
+
+    def _refresh(self):
+        offering = self._actionable and self._hovered
+        self.setText(self._action if offering else self._text)
+        if offering:
+            style = (f"QLineEdit {{ color: white; background: {self._color}; "
+                     f"border: 1px solid {self._color}; border-radius: 4px; font-weight: bold; }}")
+        elif self._alert:
+            style = f"QLineEdit {{ color: {self._color}; font-weight: bold; }}"
+        else:
+            style = ""
+        if style != self.styleSheet():   # restyling costs - only when it changes
+            self.setStyleSheet(style)
+
+    def enterEvent(self, event):
+        self._hovered = True
+        self._refresh()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered = False
+        self._refresh()
+        super().leaveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if (event.button() == Qt.LeftButton and self._actionable
+                and self.rect().contains(event.position().toPoint())):
+            self.clicked.emit()
         super().mouseReleaseEvent(event)
 
 

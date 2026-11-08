@@ -100,7 +100,12 @@ def selftest():
     Q8Logger.add_handler(log)
     Q8Logger.add_handler(errors)
     app = QApplication(sys.argv[:1])
-    win = mw.MainWindow(log)
+    # Settings of its own, not the user's: a check mustn't move their window
+    # or change their text size.
+    import tempfile
+    from PySide6.QtCore import QSettings
+    scratch = QSettings(str(Path(tempfile.mkdtemp()) / 'selftest.ini'), QSettings.IniFormat)
+    win = mw.MainWindow(log, settings=scratch)
     win.show()
 
     def pump(seconds):

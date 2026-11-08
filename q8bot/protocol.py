@@ -20,8 +20,8 @@ from enum import IntEnum
 # reply, a payload layout, gait/direction IDs. Must equal protocol.h's
 # PROTOCOL_VERSION. Not yet exchanged or checked on connect.
 PROTOCOL_VERSION = 4  # 2: SENSOR_REQUEST / SENSOR_REPLY; 3: GAIT_RUN must be repeated;
-                      # 4: TELEMETRY_REPLY adds servo voltage + hardware errors (72 bytes),
-                      #    POWER_RAIL, LED_BRIGHTNESS's don't-save flag
+                      # 4: TELEMETRY_REPLY adds servo voltage, hardware errors, torque restores (80 bytes),
+                      #    POWER_RAIL, SERVO_REBOOT, LED_BRIGHTNESS's don't-save flag
 
 START_BYTE = 0xAA
 _HEADER_LEN = 2       # msg_type, length
@@ -49,6 +49,8 @@ class CmdType(IntEnum):
     SENSOR_REQUEST = 0x0C     # no payload - sample the robot's Qwiic sensors, answered with SENSOR_REPLY
     POWER_RAIL = 0x0D         # {rail: uint8 5|6, on: uint8} - switch a buck converter, for power
                               # measurements; 6V off cuts the servos' power, torque off until a restart
+    SERVO_REBOOT = 0x0E       # {slot: uint8, 1-8} - restart one servo (DYNAMIXEL Reboot), clearing its
+                              # hardware error; the robot puts back its profile, gain and torque
 
 
 class ReplyType(IntEnum):
@@ -95,9 +97,12 @@ GAIT_NAME_TO_ID = {name: gait_id for gait_id, name in GAIT_IDS.items()}
 # voltage and hardware error status are whatever the robot last sampled (it
 # refreshes them on its own ~1s timer), since they sit outside the
 # contiguous register block the main read covers and move over seconds
-# rather than milliseconds. Protocol 3 firmware sends only the first 56 bytes.
-TELEMETRY_STRUCT = struct.Struct('<8i8h8b8B8B')
-TELEMETRY_SIZE = TELEMETRY_STRUCT.size   # 72
+# rather than milliseconds. The last 8 bytes count, per servo, the times the
+# robot's torque watchdog turned it back on since it started. Protocol 3
+# firmware sends only the first 56 bytes, the first protocol 4 builds 72.
+TELEMETRY_STRUCT = struct.Struct('<8i8h8b8B8B8B')
+TELEMETRY_SIZE = TELEMETRY_STRUCT.size   # 80
+_TELEMETRY_72 = struct.Struct('<8i8h8b8B8B')
 _TELEMETRY_V3 = struct.Struct('<8i8h8b')  # 56
 
 # Hardware Error Status (register 70) bits on the XL330 - what a nonzero
@@ -138,14 +143,20 @@ def parse_telemetry(payload: bytes):
         dict with 'position' (raw ticks), 'current' (mA, signed - reads near
         zero with torque off, since none is flowing), 'temperature' (degrees
         C), 'voltage' (each servo's supply, V) and 'hw_error' (Hardware Error
-        Status - see describe_servo_error), each a tuple of 8. From protocol
-        3 firmware, 'voltage' and 'hw_error' are None. None if the payload is
-        the wrong size.
+        Status - see describe_servo_error) and 'restored' (how many times
+        the robot found that servo's torque off with the motors on -
+        restarted, most likely - and turned it back on, since it started;
+        wraps at 255), each a tuple of 8. From protocol 3 firmware,
+        'voltage', 'hw_error' and 'restored' are None; from the first
+        protocol 4 builds, 'restored'. None if the payload is the wrong size.
     """
-    if len(payload) == TELEMETRY_SIZE:
-        values = TELEMETRY_STRUCT.unpack(payload)
+    restored = None
+    if len(payload) in (TELEMETRY_SIZE, _TELEMETRY_72.size):
+        full = len(payload) == TELEMETRY_SIZE
+        values = (TELEMETRY_STRUCT if full else _TELEMETRY_72).unpack(payload)
         voltage = tuple(v / 10 for v in values[24:32])
         hw_error = values[32:40]
+        restored = values[40:48] if full else None
     elif len(payload) == _TELEMETRY_V3.size:
         values = _TELEMETRY_V3.unpack(payload)
         voltage = hw_error = None
@@ -157,6 +168,7 @@ def parse_telemetry(payload: bytes):
         'temperature': values[16:24],
         'voltage': voltage,
         'hw_error': hw_error,
+        'restored': restored,
     }
 
 

@@ -181,6 +181,18 @@ class q8_espnow:
             raise ValueError(f'rail must be 5 or 6, not {rail!r}')
         return self._send(CmdType.POWER_RAIL, bytes([rail, 1 if on else 0]))
 
+    def reboot_servo(self, slot):
+        """
+        Restart one servo (DYNAMIXEL's Reboot), clearing its Hardware Error
+        Status - see Q8Bot.reboot_servo().
+
+        Args:
+            slot: 1-8, the servo's slot - its place in the telemetry lists, plus 1
+        """
+        if not 1 <= slot <= 8:
+            raise ValueError(f'slot must be 1-8, not {slot!r}')
+        return self._send(CmdType.SERVO_REBOOT, bytes([slot]))
+
     def move_all(self, joints_pos, dur = 0):
         # Expects 8 positions in deg. For example: [0, 90, 0, 90, 0, 90, 0, 90]
         #

@@ -104,7 +104,7 @@ class FirmwareDialog(QDialog):
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(500)
-        self.log.document().setDefaultFont(QFont("Consolas", 8))
+        self.log.document().setDefaultFont(QFont("Consolas", max(7, round(self.font().pointSizeF()) - 1)))
         self.log.setPlaceholderText("esptool output appears here.")
 
         self.flash_button = QPushButton("Flash")

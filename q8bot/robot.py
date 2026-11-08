@@ -802,6 +802,26 @@ class Q8Bot:
         return self._guard(self.link.set_power_rail, rail, on)
 
     @_needs_link
+    def reboot_servo(self, slot):
+        """
+        Restart one servo, slot 1-8 (its place in telemetry's lists, plus 1),
+        to clear a hardware error: a servo that reports one (telemetry's
+        'hw_error', see protocol.describe_servo_error) has switched its own
+        torque off, and DYNAMIXEL's Reboot instruction - or switching the
+        robot off and on - is the only way to clear it. If the cause is still
+        there (too hot, overloaded), the error comes straight back.
+
+        The robot stops any gait, waits for the servo to start up again, puts
+        back its motion profile and gain, and - if the motors were on - turns
+        torque back on holding every leg where it is, so nothing jumps, then
+        eases them back to the pose they were last told to take: the
+        rebooted servo's leg, limp until then, over a second. Takes up to a
+        second; the next telemetry shows its error gone. Needs protocol 4
+        firmware.
+        """
+        return self._guard(self.link.reboot_servo, slot)
+
+    @_needs_link
     def request_battery(self):
         """Ask for a battery reading; collect it with take_battery_reading()."""
         return self._guard(self.link.check_battery)

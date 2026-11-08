@@ -15,28 +15,27 @@ debounced with time.sleep(), and the scripted routines run on a worker so
 the window keeps painting.
 '''
 
+import json
 import logging
 import math
 import threading
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QEvent, QSettings, QTimer, QUrl
+from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QFont, QFontInfo, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
-    QGridLayout,
     QMainWindow,
     QMessageBox,
     QStatusBar,
-    QWidget,
 )
 
-from .. import imu, routine_store
+from .. import __version__, PROTOCOL_VERSION, imu, routine_store
 from ..control_config import get_joystick_direction, get_joystick_magnitude
 from ..espnow import q8_espnow
 from ..helpers import Q8Logger
-from ..protocol import sensor_kind
+from ..protocol import describe_servo_error, sensor_kind
 from ..robot import JUMP_BATTERY_THRESHOLD, JointMode, Q8Bot
 from .log_bridge import QueuedLogHandler
 from .panels import (
@@ -45,10 +44,11 @@ from .panels import (
     ManualControlPanel,
     RobotInfoPanel,
 )
+from .layout import AUTOMATIC, COLUMNS, STACK, PanelLayout
 from .sensor_window import SensorWindow
 from .teach_dialog import TeachRoutineDialog
 from .viewer import FOLLOW_IMU_HZ, FOLLOW_TELEMETRY_HZ, SIMULATED_ROBOT, ViewerPanel
-from .widgets import StatusDot
+from .widgets import StatusDot, set_base_point_size
 
 # Fast enough that a stick flick reaches the robot promptly. The gait itself
 # is timed by Q8Bot's own thread, so this only has to carry changes.
@@ -90,12 +90,35 @@ SENSOR_SILENT_SECONDS = 5.0
 # rather than firing a last twitch of movement on the way to centre.
 MOVE_PAD_DEADZONE = 0.15
 
+# View > Text Size: the window's text, and everything sized from it, scaled
+# from the font Qt picks at startup. Remembered between runs (QSettings).
+TEXT_SIZES = (0.85, 1.0, 1.15, 1.3, 1.5, 1.75, 2.0)
+
+# Help menu. The docs site's pages, by MkDocs's URL for each.
+DOCS_URL = 'https://docs.zerowirerobotics.com/'
+TROUBLESHOOTING_URL = DOCS_URL + 'using/troubleshooting/'
+RELEASES_URL = 'https://github.com/ZeroWireRobotics/q8botone-python/releases'
+ISSUES_URL = 'https://github.com/ZeroWireRobotics/q8botone-python/issues'
+WEBSITE_URL = 'https://zerowirerobotics.com/'
+
+SETTINGS_ORG, SETTINGS_APP = 'ZeroWireRobotics', 'Q8botOne'
+
 
 class MainWindow(QMainWindow):
-    def __init__(self, log_handler):
+    def __init__(self, log_handler, settings=None):
+        """settings: a QSettings to remember the window's layout and text
+        size in - the user's own (per user, per machine) if left out."""
         super().__init__()
         self.setWindowTitle("Q8bot Control")
-        self.resize(1180, 860)
+        self.setMinimumSize(480, 360)   # smaller than the panels: the window scrolls
+        self._settings = settings if settings is not None else QSettings(SETTINGS_ORG, SETTINGS_APP)
+
+        # The text size before any panel is built, so each starts out sized for it.
+        app = QApplication.instance()
+        self._base_font = QFont(app.font())
+        set_base_point_size(self._base_font.pointSizeF())
+        self._text_scale = 1.0
+        self._apply_text_scale(self._saved_float('view/text_scale', 1.0), save=False)
 
         self._log_handler = log_handler
         self.bot = None
@@ -114,6 +137,9 @@ class MainWindow(QMainWindow):
         self._teach_dialog = None    # the open TeachRoutineDialog, or None
         self._sensor_window = None   # the open SensorWindow, or None
         self._plotted_snapshot = None  # the newest reading its plot has drawn
+        self._servo_errors = None    # each servo's Hardware Error Status as last logged
+        self._servo_restored = None  # the robot's torque-restore counts as last logged
+        self._motor_window = None    # the open MotorSetupWindow, or None
 
         self.viewer = ViewerPanel()
         self.connection = ConnectionPanel(self._list_gamepads, offer_simulated=self.viewer.can_simulate)
@@ -121,21 +147,12 @@ class MainWindow(QMainWindow):
         self.manual = ManualControlPanel()
         self.info = RobotInfoPanel()
 
-        # One grid rather than two independent columns: Manual Control and
-        # Robot Information share row 2, which is what makes their Joint 1-8
-        # rows line up across the gap (both grids also use the same row pitch,
-        # see panels.PANEL_ROW_HEIGHT). The console and viewer take the slack.
-        central = QWidget()
-        grid = QGridLayout(central)
-        grid.addWidget(self.connection, 0, 0)
-        grid.addWidget(self.console, 1, 0)
-        grid.addWidget(self.manual, 2, 0)
-        grid.addWidget(self.viewer, 0, 1, 2, 1)
-        grid.addWidget(self.info, 2, 1)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
-        grid.setRowStretch(1, 1)
-        self.setCentralWidget(central)
+        # Two columns or one, splitters between them, scrolling when the
+        # window is smaller than its panels - see layout.py.
+        self.panels = PanelLayout(self.connection, self.console, self.viewer, self.manual, self.info)
+        self.setCentralWidget(self.panels)
+        self._build_menus()
+        self._restore_window()
 
         self.setStatusBar(QStatusBar())
         self._set_status("Not connected")
@@ -146,6 +163,7 @@ class MainWindow(QMainWindow):
         self.connection.gamepad_disconnect_requested.connect(self._disconnect_gamepad)
         self.connection.mode_changed.connect(self._on_mode_changed)
         self.info.sensors_requested.connect(self._open_sensor_window)
+        self.info.servo_clear_requested.connect(self._clear_servo_error)
         self.manual.gait_selected.connect(self._select_gait)
         self.manual.keep_level_toggled.connect(self._keep_level_toggled)
         self.manual.calibrate_imu_requested.connect(self._calibrate_imu)
@@ -170,6 +188,194 @@ class MainWindow(QMainWindow):
         Q8Logger.info("Q8bot control ready. Pick a port and hit Connect.")
 
     #-------------------#
+    # Window            #
+    #-------------------#
+
+    def _style_menu_bar(self):
+        '''Tighter than the style's own spacing between the titles, sized from
+        the text - set again after View > Text Size, since a style sheet's
+        lengths are worked out once, when it's set.'''
+        em = QFontInfo(self.menuBar().font()).pixelSize()
+        sheet = f"QMenuBar::item {{ padding: {round(0.3 * em)}px {round(0.55 * em)}px; margin: 0px; }}"
+        if sheet != self.menuBar().styleSheet():
+            self.menuBar().setStyleSheet(sheet)
+
+    def eventFilter(self, watched, event):
+        if watched is self.menuBar() and event.type() == QEvent.FontChange:
+            QTimer.singleShot(0, self._style_menu_bar)   # its new font, once it has it
+        return super().eventFilter(watched, event)
+
+    def _build_menus(self):
+        bar = self.menuBar()
+        self._style_menu_bar()
+        bar.installEventFilter(self)
+
+        # No File menu just for Quit - closing the window quits; Ctrl+Q too.
+        quit_action = QAction("Quit", self)
+        quit_action.setShortcut(QKeySequence("Ctrl+Q"))   # QKeySequence.Quit has no key on Windows
+        quit_action.triggered.connect(self.close)
+        self.addAction(quit_action)
+
+        view = bar.addMenu("&View")
+        size_menu = view.addMenu("&Text Size")
+        larger = size_menu.addAction("&Larger", lambda: self._step_text_size(+1))
+        larger.setShortcuts([QKeySequence("Ctrl+="), QKeySequence.ZoomIn])
+        smaller = size_menu.addAction("&Smaller", lambda: self._step_text_size(-1))
+        smaller.setShortcuts([QKeySequence.ZoomOut])
+        default = size_menu.addAction("&Default", lambda: self._set_text_scale(1.0))
+        default.setShortcut(QKeySequence("Ctrl+0"))
+        size_menu.addSeparator()
+        self._size_actions = QActionGroup(self)
+        for scale in TEXT_SIZES:
+            action = size_menu.addAction(f"{round(scale * 100)}%")
+            action.setCheckable(True)
+            action.setData(scale)
+            action.triggered.connect(lambda _checked=False, s=scale: self._set_text_scale(s))
+            self._size_actions.addAction(action)
+        self._check_text_size()
+
+        layout_menu = view.addMenu("&Layout")
+        self._layout_actions = QActionGroup(self)
+        for mode, label, tip in (
+                (AUTOMATIC, "&Automatic", "Two columns when the window is wide enough, else one"),
+                (COLUMNS, "&Two Columns", ""),
+                (STACK, "&One Column", "")):
+            action = layout_menu.addAction(label)
+            action.setCheckable(True)
+            action.setData(mode)
+            action.setStatusTip(tip)
+            action.triggered.connect(lambda _checked=False, m=mode: self._set_layout_mode(m))
+            self._layout_actions.addAction(action)
+        layout_menu.addSeparator()
+        layout_menu.addAction("&Reset Panel Sizes", self._reset_panel_sizes)
+
+        tools = bar.addMenu("&Tools")
+        tools.addAction("&Flash Firmware...", self._open_firmware_dialog)
+        tools.addAction("&Motor Setup...", self._open_motor_setup)
+        tools.addSeparator()
+        self._sensors_action = tools.addAction("&Sensors...", self._open_sensor_window)
+        # Only with readings to show, like the Sensors... button it stands for.
+        tools.aboutToShow.connect(
+            lambda: self._sensors_action.setEnabled(self.info.sensor_button.isEnabled()))
+
+        help_menu = bar.addMenu("&Help")
+        docs = help_menu.addAction("&Documentation", lambda: self._open_url(DOCS_URL))
+        docs.setShortcut(QKeySequence.HelpContents)
+        help_menu.addAction("&Troubleshooting", lambda: self._open_url(TROUBLESHOOTING_URL))
+        help_menu.addAction("&Releases and Downloads", lambda: self._open_url(RELEASES_URL))
+        help_menu.addAction("Report a &Problem...", lambda: self._open_url(ISSUES_URL))
+        help_menu.addSeparator()
+        help_menu.addAction("&About Q8botOne", self._show_about)
+
+    def _saved_float(self, key, default):
+        try:
+            return float(self._settings.value(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    # ---- text size ----
+
+    def _apply_text_scale(self, scale, save=True):
+        '''The app's font, and so every window's text, at `scale` x the
+        startup size. Drawn widgets and fixed sizes follow (widgets.text_scale).'''
+        base = self._base_font.pointSizeF()
+        if base <= 0:
+            return   # a pixel-sized system font: nothing to scale from
+        scale = min(TEXT_SIZES, key=lambda s: abs(s - scale))
+        font = QFont(self._base_font)
+        font.setPointSizeF(base * scale)
+        QApplication.instance().setFont(font)
+        self._text_scale = scale
+        if save:
+            self._settings.setValue('view/text_scale', scale)
+
+    def _set_text_scale(self, scale):
+        self._apply_text_scale(scale)
+        self._check_text_size()
+        # Panels re-measure once their fonts have changed; then which layout fits may too.
+        QTimer.singleShot(50, self.panels.fit)
+        self._set_status(f"Text size {round(self._text_scale * 100)}%")
+
+    def _step_text_size(self, step):
+        index = TEXT_SIZES.index(self._text_scale) + step
+        self._set_text_scale(TEXT_SIZES[max(0, min(len(TEXT_SIZES) - 1, index))])
+
+    def _check_text_size(self):
+        for action in self._size_actions.actions():
+            action.setChecked(action.data() == self._text_scale)
+
+    # ---- layout ----
+
+    def _set_layout_mode(self, mode, save=True):
+        self.panels.set_mode(mode)
+        for action in self._layout_actions.actions():
+            action.setChecked(action.data() == mode)
+        if save:
+            self._settings.setValue('view/layout', mode)
+
+    def _reset_panel_sizes(self):
+        self.panels.set_sizes({})
+        self._settings.remove('view/panel_sizes')
+
+    def _restore_window(self):
+        geometry = self._settings.value('window/geometry')
+        if geometry is None or not self.restoreGeometry(geometry):
+            self.resize(1180, 860)
+        mode = self._settings.value('view/layout', AUTOMATIC)
+        self._set_layout_mode(mode if mode in (AUTOMATIC, COLUMNS, STACK) else AUTOMATIC, save=False)
+        try:
+            self.panels.set_sizes(json.loads(self._settings.value('view/panel_sizes', '{}')))
+        except (TypeError, ValueError):
+            pass
+
+    def _save_window(self):
+        self._settings.setValue('window/geometry', self.saveGeometry())
+        self._settings.setValue('view/panel_sizes', json.dumps(self.panels.sizes()))
+
+    # ---- tools and help ----
+
+    def _open_firmware_dialog(self):
+        """Tools > Flash Firmware: the Firmware Flasher's own window. Picking
+        the controller this window is connected through lets go of it first."""
+        from .firmware_dialog import FirmwareDialog
+        busy = self._port if self.bot is not None and not self._simulated else None
+        FirmwareDialog(busy_port=busy, release_port=self._disconnect_robot, parent=self).exec()
+
+    def _open_motor_setup(self):
+        """Tools > Motor Setup: the robot's log over its own USB cable, and its servo commands."""
+        from .motor_setup_window import MotorSetupWindow
+        if self._motor_window is None:
+            busy = self._port if self.bot is not None and not self._simulated else None
+            self._motor_window = MotorSetupWindow(busy_port=busy, parent=self)
+            self._motor_window.destroyed.connect(lambda *_: setattr(self, '_motor_window', None))
+        self._motor_window.show()
+        self._motor_window.raise_()
+        self._motor_window.activateWindow()
+
+    def _open_url(self, url):
+        if not QDesktopServices.openUrl(QUrl(url)):
+            Q8Logger.warning(f"Couldn't open a browser for {url}")
+
+    def _show_about(self):
+        from .. import firmware_flasher as flasher
+        firmware = []
+        for target in flasher.TARGETS:
+            try:
+                identity = flasher.read_bin_identity(flasher.bin_path(target))
+                firmware.append(f"{target} {identity.version}" if identity and identity.version else None)
+            except OSError:
+                pass
+        firmware = ', '.join(f for f in firmware if f) or 'not bundled'
+        QMessageBox.about(
+            self, "About Q8botOne",
+            f"<h3>Q8botOne {__version__}</h3>"
+            f"<p>The desktop app for the Q8botOne robot, by ZeroWire Robotics.</p>"
+            f"<p>Firmware it installs: {firmware}<br>Wire protocol: {PROTOCOL_VERSION}</p>"
+            f'<p><a href="{WEBSITE_URL}">zerowirerobotics.com</a> &nbsp; '
+            f'<a href="{DOCS_URL}">Documentation</a> &nbsp; '
+            f'<a href="{RELEASES_URL}">Releases</a></p>')
+
+    #-------------------#
     # Robot             #
     #-------------------#
 
@@ -192,6 +398,8 @@ class MainWindow(QMainWindow):
         self._port = port
         self._simulated = simulated
         self._last_reply_at = None
+        self._servo_errors = None
+        self._servo_restored = None
         self._connected_at = time.monotonic()
         self._last_request_at = 0.0  # so the first request goes out immediately
         self.connection.set_robot_connected(True)
@@ -388,6 +596,7 @@ class MainWindow(QMainWindow):
 
         self._poll_robot_liveness()
         self.info.set_telemetry(self.bot.telemetry, simulated=self._simulated)
+        self._log_servo_errors(self.bot.telemetry)
         self._poll_sensors()
         self._poll_imu()
         self._poll_joint_mode()
@@ -400,6 +609,42 @@ class MainWindow(QMainWindow):
         self.manual.set_saved_routines_enabled(self._routine_slots_available())
         self._poll_gamepad()
         self._poll_manual()
+
+    def _log_servo_errors(self, sample):
+        """Say in the console when a servo shuts itself down, and when it's
+        clear again - and when the robot had to turn one's torque back on."""
+        errors = None if self._simulated or sample is None else sample.get('hw_error')
+        if errors is None:
+            return
+        before = self._servo_errors or (0,) * len(errors)
+        for joint, (was, now) in enumerate(zip(before, errors), 1):
+            if now and now != was:
+                Q8Logger.error(f"Joint {joint}'s servo shut itself down: {describe_servo_error(now)}. "
+                               "Its torque is off - click its Error, under Robot Information, to clear it.")
+            elif was and not now:
+                Q8Logger.info(f"Joint {joint}'s servo is clear again.")
+        self._servo_errors = tuple(errors)
+
+        # Counts since the robot started; the first snapshot is the baseline.
+        restored = sample.get('restored')
+        if restored is not None:
+            if self._servo_restored is not None:
+                for joint, (was, now) in enumerate(zip(self._servo_restored, restored), 1):
+                    if now != was:
+                        Q8Logger.warning(f"Joint {joint}'s servo lost its torque without an error - it "
+                                         "probably restarted - and the robot turned it back on.")
+            self._servo_restored = tuple(restored)
+
+    def _clear_servo_error(self, slot):
+        """An Error field's Clear: restart that servo (Q8Bot.reboot_servo) - short of
+        switching the robot off and on, the only way to clear its error."""
+        if self.bot is None or not self.bot.connected or self._routine_running():
+            return
+        errors = self._servo_errors
+        kind = describe_servo_error(errors[slot - 1]) if errors and errors[slot - 1] else 'its error'
+        Q8Logger.info(f"Restarting Joint {slot}'s servo to clear {kind}.")
+        self.bot.reboot_servo(slot)
+        self.info.mark_clearing(slot)
 
     def _routine_slots_available(self):
         """
@@ -863,8 +1108,11 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(text)
 
     def closeEvent(self, event):
+        self._save_window()
         self._timer.stop()
         self._close_teach_dialog()
+        if self._motor_window is not None:
+            self._motor_window.close()
         if self.bot is not None:
             self.bot.close()
             self.bot = None

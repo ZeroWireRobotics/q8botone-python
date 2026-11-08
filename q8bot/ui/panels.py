@@ -11,9 +11,10 @@ lives in viewer.py.
 
 import html
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QComboBox,
@@ -29,14 +30,17 @@ from PySide6.QtWidgets import (
 )
 
 from ..helpers import XiaoPortFinder
-from ..protocol import ticks_to_degrees
+from ..protocol import describe_servo_error, ticks_to_degrees
 from .viewer import SIMULATED_ROBOT
 from .widgets import (
+    ActionField,
     BatteryGauge,
     ClickableLabel,
     JoystickPad,
     StatusDot,
     ToggleSwitch,
+    is_font_change,
+    text_scale,
 )
 
 # Manual Control and Robot Information sit side by side and their Joint 1-8
@@ -126,12 +130,10 @@ class ConnectionPanel(QGroupBox):
         self._port_identified.connect(self._on_port_identified)
 
         self.port_combo = RefreshingCombo(self._robot_ports)
-        self.port_combo.setMinimumWidth(200)
         self.robot_button = QPushButton("Connect")
         self.robot_button.clicked.connect(self._toggle_robot)
 
         self.gamepad_combo = RefreshingCombo(self._gamepads)
-        self.gamepad_combo.setMinimumWidth(200)
         self.gamepad_button = QPushButton("Connect")
         self.gamepad_button.clicked.connect(self._toggle_gamepad)
 
@@ -147,8 +149,6 @@ class ConnectionPanel(QGroupBox):
         self.robot_state = QLabel()
         self.gamepad_dot = StatusDot()
         self.gamepad_state = QLabel()
-        for label in (self.robot_state, self.gamepad_state):
-            label.setMinimumWidth(140)
 
         grid = QGridLayout(self)
         grid.addWidget(self.robot_dot, 0, 0)
@@ -182,6 +182,20 @@ class ConnectionPanel(QGroupBox):
         self._update_buttons()
         self._paint_mode()
         self._update_mode_lock()
+        self._apply_metrics()
+
+    def _apply_metrics(self):
+        '''Sizes that follow View > Text Size.'''
+        s = text_scale(self)
+        for combo in (self.port_combo, self.gamepad_combo):
+            combo.setMinimumWidth(round(200 * s))
+        for label in (self.robot_state, self.gamepad_state):
+            label.setMinimumWidth(round(140 * s))
+
+    def changeEvent(self, event):
+        if is_font_change(event):
+            QTimer.singleShot(0, self._apply_metrics)
+        super().changeEvent(event)
 
     def _robot_ports(self):
         ports = XiaoPortFinder.list_all()
@@ -326,9 +340,18 @@ class DebugConsole(QGroupBox):
         self.view = QPlainTextEdit()
         self.view.setReadOnly(True)
         self.view.setMaximumBlockCount(2000)
-        self.view.document().setDefaultFont(QFont("Consolas", 9))
+        self._apply_metrics()
         layout = QVBoxLayout(self)
         layout.addWidget(self.view)
+
+    def _apply_metrics(self):
+        # Monospace, at the window's text size (View > Text Size).
+        self.view.document().setDefaultFont(QFont("Consolas", round(self.font().pointSizeF())))
+
+    def changeEvent(self, event):
+        if is_font_change(event):
+            QTimer.singleShot(0, self._apply_metrics)
+        super().changeEvent(event)
 
     def append(self, timestamp, level, message):
         color = LEVEL_COLORS.get(level)
@@ -406,13 +429,7 @@ class ManualControlPanel(QGroupBox):
         # tracks its text - crossing from one digit to two (9.9 -> 10.0)
         # widens the label, which widens the grid column, which re-centres
         # the pad above it: the pad visibly jumps sideways while dragging.
-        for label, worst_case in (
-            (self.stance_readout,
-             f"X {-self.STANCE_MAX_X:+.1f} mm    Y {-self.STANCE_MAX_Y:+.1f} mm"),
-            (self.tilt_readout,
-             f"Roll {-self.TILT_MAX:+.1f}°    Pitch {-self.TILT_MAX:+.1f}°"),
-        ):
-            label.setFixedWidth(label.fontMetrics().horizontalAdvance(worst_case) + 4)
+        # (Set in _apply_metrics(), so they follow View > Text Size.)
 
         self.gait_combo = QComboBox()
         self.gait_combo.setEnabled(False)   # nothing to choose until connected
@@ -458,8 +475,7 @@ class ManualControlPanel(QGroupBox):
         # whichever text it currently shows would resize the column it's in
         # and shove the pads beside it sideways (the same bug the Stance/
         # Tilt readouts had; same fix: measure the widest state up front).
-        self._lock_width_to_widest(self.hold_pose_button, [
-            (False, "Hold Pose: OFF"), (True, "Hold Pose: ON")])
+        # (_apply_metrics() measures it, so it follows View > Text Size.)
 
         # The IMU's two: only there once an MPU6050 answers on the Qwiic
         # port (set_imu()). Keep Level drives the robot - unlike Hold Pose,
@@ -467,8 +483,6 @@ class ManualControlPanel(QGroupBox):
         self.keep_level_button = QPushButton("Keep Level: OFF")
         self.keep_level_button.setCheckable(True)
         self.keep_level_button.toggled.connect(self._keep_level_toggled)
-        self._lock_width_to_widest(self.keep_level_button, [
-            (False, "Keep Level: OFF"), (True, "Keep Level: ON")])
         self.calibrate_imu_button = QPushButton("Calibrate IMU")
         self.calibrate_imu_button.setToolTip(
             "Find which way the MPU6050 is mounted, so the robot can tell how it's tilted.\n"
@@ -568,14 +582,12 @@ class ManualControlPanel(QGroupBox):
                 lambda _checked=False, index=i: self._routine_slot_clicked(index))
 
             edit_button = QPushButton("✎")
-            edit_button.setFixedWidth(28)
             edit_button.setToolTip("Edit this routine")
             edit_button.setEnabled(False)
             edit_button.clicked.connect(
                 lambda _checked=False, index=i: self._routine_edit_clicked(index))
 
             delete_button = QPushButton("✕")
-            delete_button.setFixedWidth(28)
             delete_button.setToolTip("Delete this routine")
             delete_button.setEnabled(False)
             delete_button.clicked.connect(
@@ -594,12 +606,36 @@ class ManualControlPanel(QGroupBox):
         grid.setHorizontalSpacing(28)
         grid.setColumnStretch(3, 1)   # pads sit left; space to the right
         grid.setRowStretch(6 + self.ROUTINE_SLOTS, 1)   # above the bottom edge
+        self._apply_metrics()
         self._update_readouts()
         self.set_joint_mode(None)
         self.set_scripted_routines_enabled(False)
         self.set_routines([])
         self.set_saved_routines_enabled(False)
         self.set_imu(None)
+
+    def _apply_metrics(self):
+        '''Everything sized from the text - again whenever View > Text Size changes it.'''
+        metrics = self.fontMetrics()
+        for label, worst_case in (
+            (self.stance_readout,
+             f"X {-self.STANCE_MAX_X:+.1f} mm    Y {-self.STANCE_MAX_Y:+.1f} mm"),
+            (self.tilt_readout,
+             f"Roll {-self.TILT_MAX:+.1f}°    Pitch {-self.TILT_MAX:+.1f}°"),
+        ):
+            label.setFixedWidth(metrics.horizontalAdvance(worst_case) + 4)
+        self._lock_width_to_widest(self.hold_pose_button, [
+            (False, "Hold Pose: OFF"), (True, "Hold Pose: ON")])
+        self._lock_width_to_widest(self.keep_level_button, [
+            (False, "Keep Level: OFF"), (True, "Keep Level: ON")])
+        side = round(28 * text_scale(self))
+        for button in self.routine_edit_buttons + self.routine_delete_buttons:
+            button.setFixedWidth(side)
+
+    def changeEvent(self, event):
+        if is_font_change(event):
+            QTimer.singleShot(0, self._apply_metrics)
+        super().changeEvent(event)
 
     @staticmethod
     def _lock_width_to_widest(button, states):
@@ -865,15 +901,25 @@ class RobotInfoPanel(QGroupBox):
     from one BATTERY_REPLY (and one ADC sample, so they can't disagree), and
     the three joint columns come from TELEMETRY_REPLY.
 
-    Position and current are read fresh on every snapshot; temperature is
-    whatever the robot last sampled on its own ~1s timer, since it sits
-    outside the register block the main read covers and moves over seconds.
+    Position and current are read fresh on every snapshot; temperature and
+    each servo's hardware error status are whatever the robot last sampled
+    on its own ~1s timer, since they sit outside the register block the main
+    read covers and move over seconds.
+
+    A servo with a hardware error has switched its own torque off; its Error
+    field becomes a Clear button when hovered, which restarts that servo
+    (see Q8Bot.reboot_servo).
     """
 
     JOINT_COUNT = 8
-    COLUMNS = ("Position", "Current", "Temperature")
+    COLUMNS = ("Position", "Current", "Temperature", "Error")
+    ERROR_COLOR = '#b3262b'
+    # Clearing restarts the servo (up to a second), and the robot samples its
+    # error status once a second - so wait this long for it to come back clear.
+    CLEAR_WAIT_S = 4.0
 
     sensors_requested = Signal()   # the Sensors... button
+    servo_clear_requested = Signal(int)   # an Error field's Clear: the joint's slot, 1-8
 
     def __init__(self, parent=None):
         super().__init__("Robot Information", parent)
@@ -885,8 +931,6 @@ class RobotInfoPanel(QGroupBox):
         self.battery_gauge = BatteryGauge()
         self.battery_percent = QLabel()
         self.battery_voltage = QLabel()
-        self.battery_percent.setMinimumWidth(42)
-        self.battery_voltage.setMinimumWidth(58)
 
         battery_row = QHBoxLayout()
         battery_row.addWidget(QLabel("Battery"))
@@ -911,12 +955,19 @@ class RobotInfoPanel(QGroupBox):
             grid.addWidget(header, 1, column + 1)
 
         self.joint_fields = {}
+        self._clearing = {}   # joint index -> when to give up waiting for it to come back clear
+        self._error_shown = {}   # joint index -> what its Error field shows now
         for index in range(self.JOINT_COUNT):
             row = 2 + index
             grid.addWidget(QLabel(f"Joint {index + 1}"), row, 0)
             for column, name in enumerate(self.COLUMNS):
-                field = QLineEdit()
-                field.setAlignment(Qt.AlignCenter)
+                if name == "Error":
+                    # Its own Clear button: hovered while in error, it says Clear.
+                    field = ActionField("Clear", self.ERROR_COLOR)
+                    field.clicked.connect(lambda slot=index + 1: self.servo_clear_requested.emit(slot))
+                else:
+                    field = QLineEdit()
+                    field.setAlignment(Qt.AlignCenter)
                 self.joint_fields[(name, index)] = field
                 grid.addWidget(field, row, column + 1)
 
@@ -928,9 +979,22 @@ class RobotInfoPanel(QGroupBox):
             field.setReadOnly(True)
             field.setFocusPolicy(Qt.NoFocus)
 
-        for row in range(2 + self.JOINT_COUNT):
-            grid.setRowMinimumHeight(row, PANEL_ROW_HEIGHT)
+        self._grid = grid
+        self._apply_metrics()
         grid.setRowStretch(2 + self.JOINT_COUNT, 1)
+
+    def _apply_metrics(self):
+        '''Sizes that follow View > Text Size.'''
+        s = text_scale(self)
+        self.battery_percent.setMinimumWidth(round(42 * s))
+        self.battery_voltage.setMinimumWidth(round(58 * s))
+        for row in range(2 + self.JOINT_COUNT):
+            self._grid.setRowMinimumHeight(row, round(PANEL_ROW_HEIGHT * s))
+
+    def changeEvent(self, event):
+        if is_font_change(event):
+            QTimer.singleShot(0, self._apply_metrics)
+        super().changeEvent(event)
 
     def set_battery(self, percent, volts=None):
         self.battery_gauge.set_percent(percent)
@@ -954,15 +1018,69 @@ class RobotInfoPanel(QGroupBox):
         """
         Fill the joint grid from one snapshot (see protocol.parse_telemetry),
         or clear it when passed None. A simulated robot's has positions only:
-        the simulation doesn't model servo current or temperature.
+        the simulation doesn't model servo current, temperature or errors.
         """
         if sample is None:
             for field in self.joint_fields.values():
                 field.setText("")
+            for i in range(self.JOINT_COUNT):
+                self._show_error(i, None, None)
+            self._clearing.clear()
             return
 
+        errors = None if simulated else sample.get('hw_error')
         for i in range(self.JOINT_COUNT):
             degrees = ticks_to_degrees(sample['position'][i])
             self.joint_fields[("Position", i)].setText(f"{degrees:.1f}°")
             self.joint_fields[("Current", i)].setText("n/a" if simulated else f"{sample['current'][i]} mA")
             self.joint_fields[("Temperature", i)].setText("n/a" if simulated else f"{sample['temperature'][i]}°C")
+            if errors is None:
+                self._show_error(i, None, "The simulation doesn't model servo errors." if simulated
+                                 else "The robot's firmware doesn't report servo errors - it needs protocol 4.")
+            else:
+                restored = sample.get('restored')
+                self._show_error(i, errors[i], sample['voltage'][i], restored and restored[i])
+
+    def mark_clearing(self, slot):
+        """A Clear was sent for this slot (1-8): say so until it comes back clear."""
+        self._clearing[slot - 1] = time.monotonic() + self.CLEAR_WAIT_S
+        self._error_shown.pop(slot - 1, None)   # redrawn on the next snapshot
+        self.joint_fields[("Error", slot - 1)].show_state("Clearing...")
+
+    def _show_error(self, i, error, detail, restored=None):
+        '''
+        One joint's Error field: error is its Hardware Error Status (0 =
+        fine), or None with detail saying why there isn't one; otherwise
+        detail is the servo's own reading of its supply, V, and restored how
+        many times the robot has turned its torque back on (see
+        protocol.parse_telemetry).
+        '''
+        field = self.joint_fields[("Error", i)]
+        if i in self._clearing and (not error or time.monotonic() > self._clearing[i]):
+            del self._clearing[i]   # back clear - or not, and the error shows again
+        if error is None:
+            text, tip = ("n/a", detail) if detail else ("", "")
+        elif not error:
+            text, tip = "OK", f"No hardware error. Its supply: {detail:.1f} V."
+        else:
+            kind = describe_servo_error(error)
+            count = kind.count(',') + 1
+            # Several don't fit the field - the tooltip lists them.
+            text = kind[:1].upper() + kind[1:] if count == 1 else f"{count} errors"
+            tip = (f"This servo has shut itself down ({kind}): its torque is off and stays off "
+                   f"until it restarts. Its supply: {detail:.1f} V.\n\n"
+                   "Click to clear: that restarts just this servo (DYNAMIXEL's Reboot) - short of "
+                   "switching the robot off and on, the only way to clear it. If the cause is still "
+                   "there - too hot, overloaded, the supply out of range - it comes straight back.")
+        if restored:
+            tip += (f"\n\nSince the robot started, it has lost its torque without an error "
+                    f"{restored} time{'s' if restored != 1 else ''} - probably restarted - and the "
+                    "robot turned it back on each time.")
+        clearing = i in self._clearing
+        state = ("Clearing..." if clearing else text, tip, bool(error) and not clearing)
+        if self._error_shown.get(i) == state:
+            return   # restyling a field on every poll costs; only when it changes
+        self._error_shown[i] = state
+        text, tip, in_error = state
+        field.show_state(text, alert=in_error, actionable=in_error)
+        field.setToolTip(tip)

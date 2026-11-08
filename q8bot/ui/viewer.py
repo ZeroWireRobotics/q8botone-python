@@ -400,7 +400,9 @@ class ViewerPanel(QGroupBox):
     """
 
     def __init__(self, parent=None):
-        super().__init__("", parent)
+        # Titled like the other panels, so its frame starts level with
+        # Connection's beside it - a group box's frame sits below its title.
+        super().__init__("3D View", parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 

@@ -433,8 +433,14 @@ class SimLink:
     def request_sensors(self):
         return self._send('sensors')
 
-    def set_led_brightness(self, _):
+    def set_led_brightness(self, brightness, save=True):
         return True                         # sent, and dropped: the model has no LED
+
+    def set_power_rail(self, rail, on):
+        return True                         # likewise - it has no buck converters
+
+    def reboot_servo(self, slot):
+        return True                         # its servos never fault, so there's nothing to clear
 
     def read_reply(self):
         try:
