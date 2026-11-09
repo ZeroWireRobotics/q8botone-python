@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 
 from ..helpers import XiaoPortFinder
 from ..protocol import describe_servo_error, ticks_to_degrees
+from . import theme
 from .viewer import SIMULATED_ROBOT
 from .widgets import (
     ActionField,
@@ -48,16 +49,18 @@ from .widgets import (
 # row pitch - a slider and a read-only field are naturally different heights.
 PANEL_ROW_HEIGHT = 34
 
-STATE_TEXT_COLORS = {
-    StatusDot.PENDING: '#a5620a',
-    StatusDot.LIVE: '#1a7f37',
-    StatusDot.ERROR: '#b3262b',
+# Tones (theme.set_tone) for the status text beside each dot
+STATE_TONES = {
+    StatusDot.PENDING: 'warning',
+    StatusDot.LIVE: 'ok',
+    StatusDot.ERROR: 'error',
 }
 
+# The console's lines by level - theme roles, each theme's own shade
 LEVEL_COLORS = {
-    'WARNING': '#b58900',
-    'ERROR': '#dc322f',
-    'CRITICAL': '#dc322f',
+    'WARNING': 'warning',
+    'ERROR': 'error',
+    'CRITICAL': 'error',
 }
 
 
@@ -205,11 +208,15 @@ class ConnectionPanel(QGroupBox):
             del self._port_identity[gone]
         if not self._robot_connected:
             self._identify([p for p in ports if p not in self._identifying and
-                            self._port_identity.get(p, ('',))[0] not in ('controller', 'robot', 'other')])
+                            self._port_identity.get(p, ('',))[0] not in ('controller', 'robot', 'camera', 'other')])
         entries = [self._port_entry(p) for p in ports]
         if self._offer_simulated:
             entries.append((SIMULATED_ROBOT, SIMULATED_ROBOT))
         return entries or [("No controller found", None)]
+
+    def camera_ports(self):
+        """The USB ports a board said it's the camera on, as last asked."""
+        return [port for port, (kind, _) in self._port_identity.items() if kind == 'camera']
 
     def _port_entry(self, port):
         """(label, value, key): only a controller, or a board that didn't answer, can be connected."""
@@ -284,9 +291,8 @@ class ConnectionPanel(QGroupBox):
     @staticmethod
     def _paint_status(dot, label, state, text, tooltip):
         dot.set_state(state, tooltip or text)
-        color = STATE_TEXT_COLORS.get(state)
         label.setText(text)
-        label.setStyleSheet(f"color: {color};" if color else "")
+        theme.set_tone(label, STATE_TONES.get(state))
         label.setToolTip(tooltip or "")
 
     def set_robot_connected(self, connected):
@@ -354,7 +360,7 @@ class DebugConsole(QGroupBox):
         super().changeEvent(event)
 
     def append(self, timestamp, level, message):
-        color = LEVEL_COLORS.get(level)
+        color = theme.css(LEVEL_COLORS[level]) if level in LEVEL_COLORS else None
         text = f"[{timestamp}] {level}: {message}"
         if color:
             self.view.appendHtml(f'<span style="color:{color}">{html.escape(text)}</span>')
@@ -400,7 +406,7 @@ class ManualControlPanel(QGroupBox):
     # just for different reasons (hand-posed vs. teaching-in-progress).
     JOINT_MODES = ('off', 'damping', 'on')
     JOINT_MODE_LABELS = {'off': 'Off', 'damping': 'Damping', 'on': 'On'}
-    JOINT_MODE_COLORS = {'on': '#1a7f37', 'damping': '#8250df', 'off': '#b3262b'}
+    JOINT_MODE_TONES = {'on': 'ok', 'damping': 'hold', 'off': 'error'}
     KEEP_LEVEL_COLOR = '#0e7490'
 
     # How many saved-routine rows to reserve. A fixed number rather than a
@@ -715,8 +721,7 @@ class ManualControlPanel(QGroupBox):
             font = label.font()
             font.setBold(current)
             label.setFont(font)
-            color = self.JOINT_MODE_COLORS.get(name) if current else None
-            label.setStyleSheet(f"color: {color};" if color else "")
+            theme.set_tone(label, self.JOINT_MODE_TONES.get(name) if current else None)
 
     def _joint_mode_slider_changed(self, value):
         self.joint_mode_requested.emit(self.JOINT_MODES[value])
@@ -913,7 +918,7 @@ class RobotInfoPanel(QGroupBox):
 
     JOINT_COUNT = 8
     COLUMNS = ("Position", "Current", "Temperature", "Error")
-    ERROR_COLOR = '#b3262b'
+    ERROR_COLOR = 'error'        # a theme role - the Error field resolves it
     # Clearing restarts the servo (up to a second), and the robot samples its
     # error status once a second - so wait this long for it to come back clear.
     CLEAR_WAIT_S = 4.0

@@ -1,14 +1,14 @@
 '''
 Written by yufeng.wu0902@gmail.com
 
-Binary framed wire protocol shared by the host, controller, and robot:
+Binary framed wire protocol shared by the host, controller, robot and camera:
 
     [START=0xAA][MSG_TYPE][LENGTH][PAYLOAD...][CRC_LO][CRC_HI]
 
 CRC-16/ARC (poly 0x8005, reflected 0xA001, init 0x0000) is computed over
 MSG_TYPE + LENGTH + PAYLOAD. The C++ side
-(q8botone-firmware/{robot,controller}/include/protocol.h) must stay in sync
-with this module.
+(q8botone-firmware/{robot,controller,camera}/include/protocol.h, three
+identical copies) must stay in sync with this module.
 '''
 
 import struct
@@ -19,13 +19,35 @@ from enum import IntEnum
 # any change the other side has to know about: a new or changed command or
 # reply, a payload layout, gait/direction IDs. Must equal protocol.h's
 # PROTOCOL_VERSION. Not yet exchanged or checked on connect.
-PROTOCOL_VERSION = 4  # 2: SENSOR_REQUEST / SENSOR_REPLY; 3: GAIT_RUN must be repeated;
+PROTOCOL_VERSION = 5  # 2: SENSOR_REQUEST / SENSOR_REPLY; 3: GAIT_RUN must be repeated;
                       # 4: TELEMETRY_REPLY adds servo voltage, hardware errors, torque restores (80 bytes),
-                      #    POWER_RAIL, SERVO_REBOOT, LED_BRIGHTNESS's don't-save flag
+                      #    POWER_RAIL, SERVO_REBOOT, LED_BRIGHTNESS's don't-save flag;
+                      # 5: the camera - message ranges, CAM_STATUS_REQUEST, CAM_WIFI_SET, CAM_STATUS
 
 START_BYTE = 0xAA
 _HEADER_LEN = 2       # msg_type, length
 _CRC_LEN = 2
+
+
+# Who a message is for, by its type - the robot routes on this:
+#   0x01-0x1F  commands for the robot   from the host over the radio, or from the camera
+#   0x20-0x3F  commands for the camera  the robot passes them on to its camera link
+#   0x81-0x9F  replies from the robot   back to whoever asked
+#   0xA0-0xBF  replies from the camera  the robot passes them on to the host
+def is_robot_command(msg_type):
+    return 0x01 <= msg_type <= 0x1F
+
+
+def is_camera_command(msg_type):
+    return 0x20 <= msg_type <= 0x3F
+
+
+def is_robot_reply(msg_type):
+    return 0x81 <= msg_type <= 0x9F
+
+
+def is_camera_reply(msg_type):
+    return 0xA0 <= msg_type <= 0xBF
 
 
 class CmdType(IntEnum):
@@ -52,13 +74,23 @@ class CmdType(IntEnum):
     SERVO_REBOOT = 0x0E       # {slot: uint8, 1-8} - restart one servo (DYNAMIXEL Reboot), clearing its
                               # hardware error; the robot puts back its profile, gain and torque
 
+    # host or robot -> camera
+    CAM_STATUS_REQUEST = 0x20  # no payload - answered with CAM_STATUS
+    CAM_WIFI_SET = 0x21        # {ssid_len: uint8, ssid, password_len: uint8, password} - see
+                               # build_camera_wifi_payload. The camera saves this network and joins it,
+                               # then answers with CAM_STATUS. Taken only on the camera's own USB (see
+                               # q8bot.camera): the radio isn't encrypted, so a password never crosses it
+
 
 class ReplyType(IntEnum):
-    """Robot -> host replies."""
+    """Robot or camera -> host replies."""
     BATTERY_REPLY = 0x81      # {percent: uint8, millivolts: uint16}
     RECORD_DATA_REPLY = 0x82  # retired alongside RECORD_SEND; do not reuse
     TELEMETRY_REPLY = 0x83    # one joint snapshot - see TELEMETRY_STRUCT
     SENSOR_REPLY = 0x84       # every detected Qwiic sensor's reading - see parse_sensors
+
+    # camera -> host or robot
+    CAM_STATUS = 0xA0         # the camera's Wi-Fi - see parse_camera_status
 
 
 # Canonical direction ordering for GAIT_RUN's direction_id (0-11). Must match
@@ -265,6 +297,118 @@ def parse_sensors(payload: bytes):
     if pos != len(payload):
         return None
     return SensorSnapshot(t_ms, tuple(sensors))
+
+
+class CameraWifi(IntEnum):
+    """Where the camera is with its Wi-Fi network (CAM_STATUS). Must match protocol.h."""
+    NOT_SET = 0      # no network saved yet
+    CONNECTING = 1
+    CONNECTED = 2
+    FAILED = 3       # couldn't join - see CameraStatus.reason; it keeps trying
+
+
+# Why joining failed: ESP-IDF's wifi_err_reason_t codes the camera reports,
+# for the ones a person can act on. Others show as their number.
+WIFI_FAILURES = {
+    2: 'authentication expired',
+    15: 'wrong password?',          # 4-way handshake timeout
+    200: 'lost the signal',
+    201: 'network not found',
+    202: 'wrong password?',         # authentication failed
+    203: 'the router turned it away',
+    204: 'wrong password?',         # handshake timeout
+    205: "couldn't connect",
+}
+
+
+def describe_wifi_failure(reason):
+    """'network not found' for a CAM_STATUS reason, '' for 0."""
+    if not reason:
+        return ''
+    return WIFI_FAILURES.get(reason, f'reason {reason}')
+
+
+class CameraStatus(namedtuple('CameraStatus', 'protocol wifi reason rssi ip ssid')):
+    """
+    One CAM_STATUS: protocol (the camera's PROTOCOL_VERSION), wifi
+    (CameraWifi), reason (why the last attempt to join failed, 0 if none -
+    see describe_wifi_failure), rssi (dBm, None unless connected), ip
+    ('10.0.0.101', None unless connected) and ssid (its network's name, ''
+    if none is set - never the password).
+    """
+    __slots__ = ()
+
+    @property
+    def url(self):
+        """The camera's web page, while it's on Wi-Fi - else None."""
+        return f'http://{self.ip}/' if self.wifi == CameraWifi.CONNECTED and self.ip else None
+
+    def describe(self):
+        """One readable line, e.g. "Connected to home-wifi - http://10.0.0.101/"."""
+        if self.wifi == CameraWifi.NOT_SET:
+            return "No Wi-Fi network set"
+        if self.wifi == CameraWifi.CONNECTED:
+            return f"Connected to {self.ssid} - {self.url}"
+        if self.wifi == CameraWifi.FAILED:
+            return f"Can't join {self.ssid} yet ({describe_wifi_failure(self.reason)}) - still trying"
+        return f"Joining {self.ssid}..."
+
+
+# CAM_STATUS payload, little-endian. Must match protocol.h:
+#   uint8 protocol, uint8 wifi, uint8 reason, int8 rssi, uint8 ip[4],
+#   uint8 ssid_len, then that many bytes of SSID
+_CAM_STATUS_HEADER = struct.Struct('<BBBb4sB')
+
+
+def parse_camera_status(payload: bytes):
+    """Unpack a CAM_STATUS payload into a CameraStatus - None if malformed."""
+    if len(payload) < _CAM_STATUS_HEADER.size:
+        return None
+    protocol, wifi, reason, rssi, ip, ssid_len = _CAM_STATUS_HEADER.unpack_from(payload, 0)
+    if len(payload) != _CAM_STATUS_HEADER.size + ssid_len:
+        return None
+    ssid = payload[_CAM_STATUS_HEADER.size:].decode('utf-8', errors='replace')
+    try:
+        wifi = CameraWifi(wifi)
+    except ValueError:
+        return None
+    connected = wifi == CameraWifi.CONNECTED
+    return CameraStatus(protocol, wifi, reason, rssi if connected else None,
+                        '.'.join(map(str, ip)) if connected else None, ssid)
+
+
+# What a Wi-Fi network takes: an SSID of 1-32 bytes, and a password that's
+# empty (an open network), 8-63 characters, or a 64-digit hex key.
+SSID_MAX_BYTES = 32
+PASSWORD_MIN = 8
+PASSWORD_MAX_BYTES = 63
+
+
+def build_camera_wifi_payload(ssid: str, password: str) -> bytes:
+    """
+    CAM_WIFI_SET's payload: {ssid_len, ssid, password_len, password}.
+
+    Raises:
+        ValueError, saying what's wrong, for a network the camera couldn't
+        join anyway - so it never swaps a working network for a bad one.
+    """
+    ssid_bytes = ssid.encode('utf-8')
+    password_bytes = password.encode('utf-8')
+    if not ssid_bytes:
+        raise ValueError("Enter the network's name")
+    if len(ssid_bytes) > SSID_MAX_BYTES:
+        raise ValueError(f"A network name is at most {SSID_MAX_BYTES} bytes - this one is {len(ssid_bytes)}")
+    if '\0' in ssid or '\0' in password:
+        raise ValueError("The name and password can't contain a null character")
+    hex_key = len(password) == 64 and all(c in '0123456789abcdefABCDEF' for c in password)
+    if password_bytes and not hex_key:
+        if len(password) < PASSWORD_MIN:
+            raise ValueError(f"A Wi-Fi password has at least {PASSWORD_MIN} characters - "
+                             "leave it empty for an open network")
+        if len(password_bytes) > PASSWORD_MAX_BYTES:
+            raise ValueError(f"A Wi-Fi password has at most {PASSWORD_MAX_BYTES} characters")
+    return (bytes([len(ssid_bytes)]) + ssid_bytes
+            + bytes([len(password_bytes)]) + password_bytes)
 
 
 # Matches q8Dynamixel.cpp's _deg2Dxl/_dxl2Deg exactly (_zeroOffset=4096,

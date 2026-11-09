@@ -433,6 +433,9 @@ class SimLink:
     def request_sensors(self):
         return self._send('sensors')
 
+    def request_camera_status(self):
+        return True                         # sent, and unanswered: the model has no camera
+
     def set_led_brightness(self, brightness, save=True):
         return True                         # sent, and dropped: the model has no LED
 

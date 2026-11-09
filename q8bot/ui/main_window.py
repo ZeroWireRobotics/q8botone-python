@@ -37,6 +37,7 @@ from ..espnow import q8_espnow
 from ..helpers import Q8Logger
 from ..protocol import describe_servo_error, sensor_kind
 from ..robot import JUMP_BATTERY_THRESHOLD, JointMode, Q8Bot
+from . import theme
 from .log_bridge import QueuedLogHandler
 from .panels import (
     ConnectionPanel,
@@ -119,6 +120,8 @@ class MainWindow(QMainWindow):
         set_base_point_size(self._base_font.pointSizeF())
         self._text_scale = 1.0
         self._apply_text_scale(self._saved_float('view/text_scale', 1.0), save=False)
+        # Light or dark (View > Theme), also before the panels
+        theme.apply(self._settings.value('view/theme', theme.SYSTEM))
 
         self._log_handler = log_handler
         self.bot = None
@@ -140,6 +143,7 @@ class MainWindow(QMainWindow):
         self._servo_errors = None    # each servo's Hardware Error Status as last logged
         self._servo_restored = None  # the robot's torque-restore counts as last logged
         self._motor_window = None    # the open MotorSetupWindow, or None
+        self._camera_window = None   # the open CameraWindow, or None
 
         self.viewer = ViewerPanel()
         self.connection = ConnectionPanel(self._list_gamepads, offer_simulated=self.viewer.can_simulate)
@@ -151,6 +155,15 @@ class MainWindow(QMainWindow):
         # window is smaller than its panels - see layout.py.
         self.panels = PanelLayout(self.connection, self.console, self.viewer, self.manual, self.info)
         self.setCentralWidget(self.panels)
+
+        # The camera's video, one stream for Robot View and the Camera Video
+        # window alike, and whether there's a camera to show at all
+        from .camera_view import CameraFinder, CameraStream
+        self.camera_stream = CameraStream(self)
+        self.camera_finder = CameraFinder(self._settings, self._real_robot, self.connection.camera_ports,
+                                          self.camera_stream, self)
+        self.camera_finder.changed.connect(self._camera_found)
+
         self._build_menus()
         self._restore_window()
 
@@ -249,9 +262,38 @@ class MainWindow(QMainWindow):
         layout_menu.addSeparator()
         layout_menu.addAction("&Reset Panel Sizes", self._reset_panel_sizes)
 
+        theme_menu = view.addMenu("T&heme")
+        self._theme_actions = QActionGroup(self)
+        for which, label, tip in (
+                (theme.SYSTEM, "&System", "Light or dark, as Windows is set"),
+                (theme.LIGHT, "&Light", ""),
+                (theme.DARK, "&Dark", "")):
+            action = theme_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(which == theme.choice())
+            action.setStatusTip(tip)
+            action.triggered.connect(lambda _checked=False, w=which: self._set_theme(w))
+            self._theme_actions.addAction(action)
+
+        # What the Robot View panel shows. The camera only once there's one
+        # (CameraFinder) - greyed out until then.
+        robot_view = view.addMenu("&Robot View")
+        self._robot_view_actions = QActionGroup(self)
+        self._model_view_action = robot_view.addAction("&3D Model")
+        self._model_view_action.triggered.connect(self._show_model_view)
+        self._camera_view_action = robot_view.addAction("&Camera")
+        self._camera_view_action.triggered.connect(self._show_camera_view)
+        for action in (self._model_view_action, self._camera_view_action):
+            action.setCheckable(True)
+            self._robot_view_actions.addAction(action)
+        self._model_view_action.setChecked(True)
+        self._camera_found(self.camera_finder.host)
+
         tools = bar.addMenu("&Tools")
         tools.addAction("&Flash Firmware...", self._open_firmware_dialog)
         tools.addAction("&Motor Setup...", self._open_motor_setup)
+        tools.addAction("Camera &Video...", self._open_camera_window)
+        tools.addAction("&Camera Wi-Fi...", self._open_camera_dialog)
         tools.addSeparator()
         self._sensors_action = tools.addAction("&Sensors...", self._open_sensor_window)
         # Only with readings to show, like the Sensors... button it stands for.
@@ -351,6 +393,57 @@ class MainWindow(QMainWindow):
         self._motor_window.show()
         self._motor_window.raise_()
         self._motor_window.activateWindow()
+
+    def _open_camera_dialog(self):
+        """Tools > Camera Wi-Fi: the camera's network, over the camera's own USB cable."""
+        from .camera_dialog import CameraDialog
+        CameraDialog(settings=self._settings, parent=self).exec()
+
+    def _set_theme(self, which):
+        """View > Theme: System, Light or Dark - the whole app at once, and kept for next time."""
+        theme.apply(which)
+        self._settings.setValue('view/theme', which)
+
+    def _real_robot(self):
+        """The connected robot, or None - never the simulated one, which has no camera."""
+        return self.bot if self.bot is not None and not self._simulated else None
+
+    def _camera_found(self, host):
+        """CameraFinder's news: a camera at `host`, or none. With none, Robot
+        View's Camera is greyed out - and if it was showing, it's 3D again."""
+        self._camera_view_action.setEnabled(host is not None)
+        self._camera_view_action.setText("&Camera" if host else "Camera (none found)")
+        self._camera_view_action.setStatusTip(
+            f"The camera's video, from {host}" if host else
+            "No camera answering - set its Wi-Fi in Tools > Camera Wi-Fi, or connect the robot it's on")
+        if host is None and self.viewer.showing_camera:
+            Q8Logger.warning("Robot View: the camera stopped answering - back to the 3D model")
+            self._model_view_action.setChecked(True)
+            self.viewer.show_model()
+        elif host is not None and self.viewer.showing_camera:
+            self.viewer.show_camera(self.camera_stream, host)   # its address changed
+
+    def _show_model_view(self):
+        """View > Robot View > 3D Model."""
+        self.viewer.show_model()
+
+    def _show_camera_view(self):
+        """View > Robot View > Camera."""
+        host = self.camera_finder.host
+        if host is None:                    # gone between the menu opening and the click
+            self._model_view_action.setChecked(True)
+            return
+        self.viewer.show_camera(self.camera_stream, host)
+
+    def _open_camera_window(self):
+        """Tools > Camera Video: the camera's live picture in a window of its own."""
+        from .camera_view import CameraWindow
+        if self._camera_window is None:
+            self._camera_window = CameraWindow(self._settings, self._real_robot, self.camera_stream, parent=self)
+            self._camera_window.destroyed.connect(lambda *_: setattr(self, '_camera_window', None))
+        self._camera_window.show()
+        self._camera_window.raise_()
+        self._camera_window.activateWindow()
 
     def _open_url(self, url):
         if not QDesktopServices.openUrl(QUrl(url)):

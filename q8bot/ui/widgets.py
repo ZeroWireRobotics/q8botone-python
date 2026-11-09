@@ -24,6 +24,8 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor, QPainter, QPalette
 from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QLineEdit, QSizePolicy, QWidget
 
+from . import theme
+
 
 # Text size (View > Text Size). The window scales the app's font from the
 # size Qt picked at startup; drawn widgets scale their geometry by the same
@@ -549,8 +551,10 @@ class ActionField(QLineEdit):
         self.setReadOnly(True)
         self.setFocusPolicy(Qt.NoFocus)
         self.setAlignment(Qt.AlignCenter)
-        self._action, self._color = action, color
+        self._action, self._color = action, color   # a colour, or a theme role such as 'error'
         self._text, self._alert, self._actionable, self._hovered = "", False, False, False
+        if theme.notifier is not None:
+            theme.notifier.changed.connect(self._refresh)   # its colour is the theme's
 
     @property
     def actionable(self):
@@ -563,14 +567,15 @@ class ActionField(QLineEdit):
         self.setCursor(Qt.PointingHandCursor if actionable else Qt.ArrowCursor)
         self._refresh()
 
-    def _refresh(self):
+    def _refresh(self, *_):
         offering = self._actionable and self._hovered
         self.setText(self._action if offering else self._text)
+        color = theme.css(self._color)
         if offering:
-            style = (f"QLineEdit {{ color: white; background: {self._color}; "
-                     f"border: 1px solid {self._color}; border-radius: 4px; font-weight: bold; }}")
+            style = (f"QLineEdit {{ color: white; background: {color}; "
+                     f"border: 1px solid {color}; border-radius: 4px; font-weight: bold; }}")
         elif self._alert:
-            style = f"QLineEdit {{ color: {self._color}; font-weight: bold; }}"
+            style = f"QLineEdit {{ color: {color}; font-weight: bold; }}"
         else:
             style = ""
         if style != self.styleSheet():   # restyling costs - only when it changes

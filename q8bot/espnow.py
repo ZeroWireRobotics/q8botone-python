@@ -132,6 +132,15 @@ class q8_espnow:
         """
         return self._send(CmdType.SENSOR_REQUEST)
 
+    def request_camera_status(self):
+        """
+        Ask the camera on the robot how its Wi-Fi is. The robot passes it on
+        over its UART link, and the camera's CAM_STATUS comes back the same
+        way (see protocol.parse_camera_status). Nothing answers without a
+        camera, or from firmware before protocol 5.
+        """
+        return self._send(CmdType.CAM_STATUS_REQUEST)
+
     def send_jump(self):
         return self._send(CmdType.JUMP)
 

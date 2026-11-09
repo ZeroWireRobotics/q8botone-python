@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from .. import firmware_flasher as flasher
 from ..helpers import XiaoPortFinder
+from . import theme
 from .panels import RefreshingCombo
 
 TARGET_LABELS = {'robot': 'Robot', 'controller': 'Controller'}
@@ -34,8 +35,9 @@ TARGET_LABELS = {'robot': 'Robot', 'controller': 'Controller'}
 # answer again - long enough to cover that, short enough not to feel hung.
 VERIFY_TIMEOUT_S = 6.0
 
-OK_COLOR = '#1a7f37'
-ERROR_COLOR = '#b3262b'
+# Status text tones (theme.set_tone) - each theme has its own shade
+OK_COLOR = 'ok'
+ERROR_COLOR = 'error'
 
 
 def _version_text(version):
@@ -179,7 +181,7 @@ class FirmwareDialog(QDialog):
     @staticmethod
     def _set_label(label, text, color):
         label.setText(text)
-        label.setStyleSheet(f"color: {color};" if color else "")
+        theme.set_tone(label, color)
 
     def _update_buttons(self):
         idle = not self._busy

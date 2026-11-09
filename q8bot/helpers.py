@@ -192,11 +192,12 @@ class XiaoPortFinder:
         What's on `port`.
 
         Returns:
-            (kind, version): kind is 'controller', 'robot', 'other' (a board
-            that says it's something else), 'silent' (no answer - firmware
-            from before boards reported themselves, or not a Q8botOne board)
-            or 'busy' (another program has the port open). version is the
-            firmware version it reported, or None.
+            (kind, version): kind is 'controller', 'robot', 'camera' (the
+            camera board - an ESP32-S3 with the same USB ID), 'other' (a
+            board that says it's something else), 'silent' (no answer -
+            firmware from before boards reported themselves, or not a
+            Q8botOne board) or 'busy' (another program has the port open).
+            version is the firmware version it reported, or None.
         """
         from .firmware_flasher import identify_device   # imported here: it needs nothing from helpers
         try:
@@ -205,16 +206,17 @@ class XiaoPortFinder:
             return 'busy', None
         if found is None:
             return 'silent', None
-        if found.target in ('controller', 'robot'):
+        if found.target in ('controller', 'robot', 'camera'):
             return found.target, found.version
         return 'other', found.version
 
     @staticmethod
     def describe(kind, version=None):
         """A short, readable label for an identify() result."""
-        text = {'controller': 'controller', 'robot': 'robot', 'other': 'not a Q8botOne board',
-                'silent': 'no answer', 'busy': 'in use by another program'}[kind]
-        return f"{text} {version}" if version and kind in ('controller', 'robot') else text
+        text = {'controller': 'controller', 'robot': 'robot', 'camera': 'camera',
+                'other': 'not a Q8botOne board', 'silent': 'no answer',
+                'busy': 'in use by another program'}[kind]
+        return f"{text} {version}" if version and kind in ('controller', 'robot', 'camera') else text
 
     @classmethod
     def find_controller(cls, timeout=1.5):

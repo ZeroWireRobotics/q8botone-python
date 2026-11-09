@@ -1,9 +1,10 @@
 '''
 Written by yufeng.wu0902@gmail.com
 
-The 3D viewer panel. With the simulator installed (the [sim] extra, which
-brings MuJoCo) it shows the robot's simulated model, live. What moves it
-depends on what's connected:
+The Robot View panel: the robot in 3D, or - picked in View > Robot View -
+the camera's video (camera_view.CameraPage). With the simulator installed
+(the [sim] extra, which brings MuJoCo) the 3D view shows the robot's
+simulated model, live. What moves it depends on what's connected:
 
   a robot          what the robot measures: its eight joint angles from
                    telemetry, shown on a test stand - the joints alone don't
@@ -39,10 +40,20 @@ from types import SimpleNamespace
 
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QGroupBox, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSizePolicy,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..helpers import Q8Logger
 from ..protocol import ticks_to_degrees
+from . import theme
 
 
 def _shaded_from_above():
@@ -395,19 +406,40 @@ class LiveModel(QWidget):
 
 class ViewerPanel(QGroupBox):
     """
-    The robot in 3D: the simulator's live model if it's installed (see
-    LiveModel), else the STL to orbit. Click-drag to rotate, scroll to zoom.
+    The robot, two ways (View > Robot View): in 3D - the simulator's live
+    model if it's installed (see LiveModel), else the STL to orbit; click-
+    drag to rotate, scroll to zoom - or through the camera on the robot (see
+    camera_view.CameraPage). 3D unless asked for the camera.
     """
 
     def __init__(self, parent=None):
         # Titled like the other panels, so its frame starts level with
         # Connection's beside it - a group box's frame sits below its title.
-        super().__init__("3D View", parent)
+        super().__init__("Robot View", parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.view = None
         self.live = None
+        self.camera = None                  # the CameraPage, once the camera has been shown
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self._build_model())
+        layout.addWidget(self.stack)
+
+        # The 3D scene's sky and floor follow the theme (View > Theme)
+        self._dark_scene = False
+        if theme.notifier is not None:
+            theme.notifier.changed.connect(self._theme_changed)
+            self._theme_changed(theme.shown())
+
+    def _theme_changed(self, shown):
+        dark = shown == theme.DARK
+        if self.live is not None and dark != self._dark_scene:
+            self._dark_scene = dark
+            self.live.view.set_dark(dark)
+
+    def _build_model(self):
+        """The 3D page: the live model, the STL, or a note saying why there's neither."""
         simulator = _simulator()
         if simulator is not None:
             try:
@@ -415,27 +447,42 @@ class ViewerPanel(QGroupBox):
             except Exception as exc:
                 Q8Logger.error(f"Could not start the simulated model, showing the STL instead: {exc}")
         if self.live is not None:
-            layout.addWidget(self.live)
-            Q8Logger.info("3D view: the simulated model - it follows the robot you connect.")
-            return
+            Q8Logger.info("Robot View: the simulated model - it follows the robot you connect.")
+            return self.live
 
         model_path = find_model()
-
         if model_path is None:
-            layout.addWidget(self._placeholder(
+            return self._placeholder(
                 "Interactive 3D Viewer\n\n"
-                f"Drop a .stl into {ASSET_DIR} to show the robot here."))
-            return
-
+                f"Drop a .stl into {ASSET_DIR} to show the robot here.")
         try:
-            widget = self._build_view(model_path)
+            return self._build_view(model_path)
         except Exception as exc:
             Q8Logger.error(f"Could not show {model_path.name}: {exc}")
-            layout.addWidget(self._placeholder(
-                f"Could not load {model_path.name}\n\n{exc}"))
-            return
+            return self._placeholder(f"Could not load {model_path.name}\n\n{exc}")
 
-        layout.addWidget(widget)
+    @property
+    def showing_camera(self):
+        return self.camera is not None and self.stack.currentWidget() is self.camera
+
+    def show_camera(self, stream, host):
+        """
+        The camera's video, from `stream` (the app's CameraStream) at `host`.
+        The 3D model carries on unseen meanwhile, so it's current when it's
+        shown again.
+        """
+        if self.camera is None:
+            from .camera_view import CameraPage   # its network code only once it's wanted
+            self.camera = CameraPage(stream)
+            self.stack.addWidget(self.camera)
+        self.camera.start(host)
+        self.stack.setCurrentWidget(self.camera)
+
+    def show_model(self):
+        """Back to 3D - letting go of the camera's video."""
+        if self.camera is not None:
+            self.camera.stop()
+        self.stack.setCurrentIndex(0)
 
     @property
     def follows_robot(self):

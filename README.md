@@ -11,7 +11,7 @@ Python library and desktop app for **Q8botOne**, a quadruped robot with no physi
 - `q8bot/` - the Python library, for driving the robot from your own scripts
 - `q8bot/ui/` - the desktop app, built on the library
 - `q8botone_sim/` and `model/` - the simulator: Q8botOne's physics model in
-  [MuJoCo](https://mujoco.org), behind the app's 3D view and Simulated robot
+  [MuJoCo](https://mujoco.org), behind the app's Robot View (in 3D) and Simulated robot
 - `appbuild/` - how the downloadable app is built
 - `example.py` - a guided tour of the library on your robot
 
@@ -127,7 +127,7 @@ find how the sensor is mounted - once) and **Keep Level**, which holds the
 body level while the robot stands, whatever the ground under it does.
 
 With the simulator - the `sim` in the install above; the released app has
-it built in - the 3D view shows the robot's simulated model, live.
+it built in - Robot View shows the robot's simulated model, live, in 3D.
 Connected to a robot, the model takes the robot's measured joint angles, on
 a test stand - and with the
 MPU6050 calibrated, comes off the stand: tilted, turned and walked along as

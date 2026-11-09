@@ -45,6 +45,7 @@ from .protocol import (
     GAIT_NAME_TO_ID,
     ReplyType,
     parse_battery,
+    parse_camera_status,
     parse_sensors,
     parse_telemetry,
     ticks_to_degrees,
@@ -285,6 +286,8 @@ class Q8Bot:
         self._sensor_history = deque(maxlen=SENSOR_HISTORY_LENGTH)
         self._sensor_hz = DEFAULT_SENSOR_HZ
         self._sensor_last_request = 0.0
+        self._camera_status = None
+        self._camera_status_at = None
         self._pos_x = 0.0
         self._pos_y = 0.0
         self._damping = False          # see set_joint_mode()/_damping_tick()
@@ -825,6 +828,33 @@ class Q8Bot:
     def request_battery(self):
         """Ask for a battery reading; collect it with take_battery_reading()."""
         return self._guard(self.link.check_battery)
+
+    @_needs_link
+    def request_camera_status(self):
+        """
+        Ask the camera on the robot how its Wi-Fi is - its address, for one.
+        The answer lands in camera_status. Nothing answers without a camera,
+        or from firmware before protocol 5; the radio loses the odd request,
+        so ask again if nothing came.
+        """
+        return self._guard(self.link.request_camera_status)
+
+    @property
+    def camera_status(self):
+        """
+        The camera's last answer to request_camera_status(), as a
+        protocol.CameraStatus - its Wi-Fi state, network and address (.url
+        is its video page). None if none has arrived.
+        """
+        with self._reply_lock:
+            return self._camera_status
+
+    @property
+    def camera_status_age(self):
+        """Seconds since camera_status arrived, or None if it hasn't."""
+        with self._reply_lock:
+            received = self._camera_status_at
+        return None if received is None else time.monotonic() - received
 
     @_needs_link
     def ping(self, timeout=1.5):
@@ -1642,6 +1672,12 @@ class Q8Bot:
                         self._sensors = snapshot
                         self._sensors_received_at = time.monotonic()
                         self._sensor_history.append(snapshot)
+            elif reply_type == ReplyType.CAM_STATUS:
+                status = parse_camera_status(payload)
+                if status is not None:
+                    with self._reply_lock:
+                        self._camera_status = status
+                        self._camera_status_at = time.monotonic()
 
     def _run(self):
         next_tick = time.monotonic()

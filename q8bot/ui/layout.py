@@ -5,10 +5,10 @@ Where the control window's five panels go, and how that follows the
 window's shape.
 
 Wide enough for two columns: Connection over the Debug Console beside the
-3D View, and Manual Control beside Robot Information below. Every boundary
+Robot View, and Manual Control beside Robot Information below. Every boundary
 is a splitter you can drag; the top and bottom halves share one column split,
 so the panels' edges line up across the window. Narrower than that: one
-column - Connection, the 3D View, Manual Control, Robot Information, the
+column - Connection, Robot View, Manual Control, Robot Information, the
 Debug Console - scrolling. Either way the window scrolls rather than refusing
 to get smaller than its panels.
 
@@ -26,7 +26,7 @@ AUTOMATIC, COLUMNS, STACK = 'auto', 'columns', 'stack'
 # so a window dragged to right about the boundary doesn't flip back and forth.
 HYSTERESIS_PX = 40
 
-# The stack's 3D View and Debug Console: these tall (at 100% text), as
+# The stack's Robot View and Debug Console: these tall (at 100% text), as
 # neither has a natural height of its own.
 STACK_VIEWER_HEIGHT = 380
 STACK_CONSOLE_HEIGHT = 200
@@ -113,7 +113,7 @@ class PanelLayout(QScrollArea):
             self.rows = QSplitter(Qt.Vertical)
             self.rows.addWidget(self.top)
             self.rows.addWidget(self.bottom)
-            self.rows.setStretchFactor(0, 1)    # a taller window: the console and 3D View get it
+            self.rows.setStretchFactor(0, 1)    # a taller window: the console and Robot View get it
             self.rows.setStretchFactor(1, 0)
             for half in (self.top, self.bottom):   # a wider one: both columns
                 half.setStretchFactor(0, 1)
@@ -149,7 +149,7 @@ class PanelLayout(QScrollArea):
             return
         rows, columns = self._sizes.get('rows'), self._sizes.get('columns')
         if not rows:
-            # The panels below as tall as they ask to be; the console and 3D View the rest.
+            # The panels below as tall as they ask to be; the console and Robot View the rest.
             below = max(self.manual.sizeHint().height(), self.info.sizeHint().height())
             rows = [max(1, self.rows.height() - below), below]
         if not columns:

@@ -14,6 +14,7 @@ cloned next to this repository (`../q8botone-firmware`).
 - `q8bot/robot.py` - `Q8Bot`, the public API; every command is documented there
 - `q8bot/protocol.py` - the binary wire protocol (framed, CRC-checked)
 - `q8bot/espnow.py` - the serial link to the controller
+- `q8bot/camera.py` - the camera board (a XIAO ESP32S3) over its own USB: its Wi-Fi network
 - `q8bot/kinematics_solver.py`, `gait_generator.py`, `gait_manager.py` - leg kinematics and gaits
 - `q8bot/export_gait_tables.py` - writes the firmware's `robot/include/gaitTables.h`
 - `q8bot/imu.py` - the MPU6050: mount calibration, body tilt and heading, Keep Level
@@ -58,9 +59,10 @@ print(sim.chassis())                 # where the body got to, mm
   `example.py`, the app's Connect) drives real motors. Don't run it unless
   the user says the robot is ready; use the simulator instead.
 - **The protocol has two ends.** `q8bot/protocol.py` mirrors `protocol.h` in
-  both `robot/include/` and `controller/include/` of the firmware. Keep
-  command IDs, payload layouts and `DIRECTION_ORDER` in step, and bump
-  `PROTOCOL_VERSION` (both sides) for any change the other side has to know about.
+  `robot/include/`, `controller/include/` and `camera/include/` of the
+  firmware (three identical copies). Keep command IDs, payload layouts and
+  `DIRECTION_ORDER` in step, and bump `PROTOCOL_VERSION` (both sides) for any
+  change the other side has to know about.
 - **Generated files.** `gaitTables.h` comes from `python -m q8bot.export_gait_tables`;
   `requirements.txt` from `python update_requirements.py` (edit `pyproject.toml`);
   `q8bot/firmware/*.bin` from `python update_firmware_bins.py`, after building
