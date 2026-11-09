@@ -62,6 +62,9 @@ APP_ICON = Path(__file__).resolve().parent.parent / 'assets' / 'zwr-icon.png'
 # settled on by hand on hardware.
 STANCE_TRIM_MAX_DX = 25.0
 STANCE_TRIM_MAX_DY = 15.0
+# Clicking the right stick in switches it to body tilt and back - degrees of
+# roll/pitch at full deflection, the same as the Body Tilt pad's.
+STICK_TILT_MAX = ManualControlPanel.TILT_MAX
 
 # Opening the COM port only proves the ESP32C3 dongle is plugged in - the
 # robot is a separate device over ESP-NOW and the protocol has no ACK, so a
@@ -128,6 +131,7 @@ class MainWindow(QMainWindow):
         self.joystick = None
         self.input = None          # InputHandler once a pad is connected
         self._buttons = {}         # last-seen state, for press-edge detection
+        self._stick_tilts = False  # the right stick tilts the body, not shifts the stance
         self._routine = None       # worker running a blocking routine
         self._port = None
         self._simulated = False    # connected to the 3D view's simulated robot, not a real one
@@ -612,6 +616,7 @@ class MainWindow(QMainWindow):
         self.joystick = joystick
         self.input = InputHandler(True, joystick, mapping)
         self._buttons.clear()
+        self._stick_tilts = False
         self.connection.set_gamepad_connected(True)
         # Switch to Xbox mode straight away - connecting a pad and then
         # finding it does nothing until you flip a toggle is a poor welcome.
@@ -1022,14 +1027,21 @@ class MainWindow(QMainWindow):
             return
 
         self.bot.idle()
-        self.bot.stance_trim(*self.input.get_stance_offset(
-            STANCE_TRIM_MAX_DX, STANCE_TRIM_MAX_DY))
+        if self._stick_tilts:
+            h, v = self.input.get_right_stick()
+            self.bot.set_stance(roll=h * STICK_TILT_MAX, pitch=v * STICK_TILT_MAX)
+        else:
+            self.bot.stance_trim(*self.input.get_stance_offset(
+                STANCE_TRIM_MAX_DX, STANCE_TRIM_MAX_DY))
         self._poll_gamepad_actions()
 
     def _poll_gamepad_actions(self):
         if self._pressed('reset'):
             Q8Logger.info("Reset to stance.")
             self.bot.stand(500)
+        elif self._pressed('toggle_tilt'):
+            self._stick_tilts = not self._stick_tilts
+            Q8Logger.info(f"Right stick: {'body tilt' if self._stick_tilts else 'stance'}.")
         elif self._pressed('toggle_torque'):
             on = self.bot.set_torque(not self.bot.torque)
             Q8Logger.info(f"Torque {'ON' if on else 'OFF'}.")

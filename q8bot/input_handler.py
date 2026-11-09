@@ -114,6 +114,19 @@ class InputHandler:
         Returns:
             tuple: (dx, dy) in mm
         """
+        h, v = self.get_right_stick()
+        return h * max_dx, v * max_dy
+
+    def get_right_stick(self):
+        """
+        The right stick's deflection, post-deadzone: (horizontal, vertical),
+        each -1.0 to 1.0, right and up positive. (0.0, 0.0) where
+        get_stance_offset() would return it - the right stick drives both
+        the stance and, toggled by clicking it, the body tilt.
+
+        Returns:
+            tuple: (h, v)
+        """
         if not self.use_joystick or not self.joystick_mapping:
             return 0.0, 0.0
 
@@ -129,9 +142,9 @@ class InputHandler:
         v = apply_deadzone(self.joystick.get_axis(v_axis), deadzone)
 
         # Stick up is a negative axis value (pygame convention) - flip so
-        # "up" raises the stance (increases y). Swap the sign here if this
-        # turns out backwards on hardware.
-        return h * max_dx, -v * max_dy
+        # "up" is positive (raises the stance, tilts the nose up). Swap the
+        # sign here if this turns out backwards on hardware.
+        return h, -v
 
     def is_trigger_pressed(self, axis_name, threshold=0.5):
         """

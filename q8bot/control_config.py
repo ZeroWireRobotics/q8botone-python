@@ -108,7 +108,8 @@ JOYSTICK_CONFIG = {
                 "right": 1,
                 "side1": 4,
                 "side2": 7,
-                "side3": 5  # RB - right bumper
+                "side3": 5,  # RB - right bumper
+                "stick_right": 9  # RS - clicking the right stick in
             }
         },
         "Generic Controller": {
@@ -138,7 +139,8 @@ JOYSTICK_CONFIG = {
         "jump": "left",
         "reset": "side1",
         "exit": "side2",
-        "toggle_torque": "side3"
+        "toggle_torque": "side3",
+        "toggle_tilt": "stick_right"  # right stick: stance <-> body tilt
     }
 }
 
